@@ -27,6 +27,13 @@ with st.sidebar:
     period = st.selectbox("الفترة التاريخية", ["1y", "2y", "5y", "10y"], index=2)
     interval = st.selectbox("الإطار الزمني", ["1d", "1wk"], index=0)
 
+pivot_window = st.slider(
+    "حساسية القمم والقيعان",
+    min_value=2,
+    max_value=10,
+    value=3,
+    step=1
+)
 
 @st.cache_data(show_spinner=False)
 def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
@@ -120,6 +127,151 @@ def classify_market_state(row: pd.Series) -> tuple[str, str]:
         action = "No Trade"
 
     return state, action
+
+def detect_fractal_swings(df: pd.DataFrame, left: int = 3, right: int = 3) -> pd.DataFrame:
+    """
+    Fractal Swing Detection v1:
+    - القمة مؤكدة إذا كان High أعلى من عدد شموع قبلها وبعدها.
+    - القاع مؤكد إذا كان Low أقل من عدد شموع قبلها وبعدها.
+    - ملاحظة: هذه قمم/قيعان مؤكدة، أي تحتاج right شموع للتأكيد.
+    """
+
+    out = df.copy()
+    out["swing_high"] = False
+    out["swing_low"] = False
+
+    for i in range(left, len(out) - right):
+        current_high = out.loc[i, "High"]
+        current_low = out.loc[i, "Low"]
+
+        left_highs = out.loc[i - left:i - 1, "High"]
+        right_highs = out.loc[i + 1:i + right, "High"]
+
+        left_lows = out.loc[i - left:i - 1, "Low"]
+        right_lows = out.loc[i + 1:i + right, "Low"]
+
+        if current_high > left_highs.max() and current_high > right_highs.max():
+            out.loc[i, "swing_high"] = True
+
+        if current_low < left_lows.min() and current_low < right_lows.min():
+            out.loc[i, "swing_low"] = True
+
+    return out
+
+
+def build_swing_sequence(df: pd.DataFrame) -> list[dict]:
+    """
+    يحول القمم والقيعان إلى سلسلة بنيوية مرتبة.
+    إذا ظهرت قمتان متتاليتان، نحتفظ بالأعلى.
+    إذا ظهر قاعان متتاليان، نحتفظ بالأدنى.
+    """
+
+    raw_swings = []
+
+    for idx, row in df.iterrows():
+        if row.get("swing_high", False):
+            raw_swings.append(
+                {
+                    "index": idx,
+                    "date": row["Date"],
+                    "type": "high",
+                    "price": float(row["High"]),
+                }
+            )
+
+        if row.get("swing_low", False):
+            raw_swings.append(
+                {
+                    "index": idx,
+                    "date": row["Date"],
+                    "type": "low",
+                    "price": float(row["Low"]),
+                }
+            )
+
+    raw_swings = sorted(raw_swings, key=lambda x: x["index"])
+
+    if not raw_swings:
+        return []
+
+    cleaned = [raw_swings[0]]
+
+    for swing in raw_swings[1:]:
+        last = cleaned[-1]
+
+        if swing["type"] != last["type"]:
+            cleaned.append(swing)
+        else:
+            if swing["type"] == "high" and swing["price"] > last["price"]:
+                cleaned[-1] = swing
+            elif swing["type"] == "low" and swing["price"] < last["price"]:
+                cleaned[-1] = swing
+
+    return cleaned
+
+
+def analyze_fractal_structure(df: pd.DataFrame) -> tuple[dict, list[dict]]:
+    swings = build_swing_sequence(df)
+
+    if len(swings) < 4:
+        return {
+            "structure_trend": "غير كافٍ",
+            "cycle_state": "لا توجد دورات مؤكدة كافية",
+            "last_swing": "غير متاح",
+            "last_swing_price": np.nan,
+            "price_position": np.nan,
+            "swings_count": len(swings),
+        }, swings
+
+    highs = [s for s in swings if s["type"] == "high"]
+    lows = [s for s in swings if s["type"] == "low"]
+
+    if len(highs) >= 2 and len(lows) >= 2:
+        last_high = highs[-1]
+        prev_high = highs[-2]
+        last_low = lows[-1]
+        prev_low = lows[-2]
+
+        higher_high = last_high["price"] > prev_high["price"]
+        higher_low = last_low["price"] > prev_low["price"]
+        lower_high = last_high["price"] < prev_high["price"]
+        lower_low = last_low["price"] < prev_low["price"]
+
+        if higher_high and higher_low:
+            structure_trend = "بنية صاعدة"
+        elif lower_high and lower_low:
+            structure_trend = "بنية هابطة"
+        else:
+            structure_trend = "بنية مختلطة"
+    else:
+        structure_trend = "غير كافٍ"
+
+    last_swing = swings[-1]
+    current_close = float(df["Close"].iloc[-1])
+
+    if last_swing["type"] == "low":
+        cycle_state = "بعد قاع مؤكد / محاولة بداية دورة صاعدة"
+    else:
+        cycle_state = "بعد قمة مؤكدة / احتمال تصحيح أو نهاية موجة"
+
+    recent_swings = swings[-4:]
+    recent_prices = [s["price"] for s in recent_swings]
+    recent_min = min(recent_prices)
+    recent_max = max(recent_prices)
+
+    if recent_max > recent_min:
+        price_position = (current_close - recent_min) / (recent_max - recent_min) * 100
+    else:
+        price_position = np.nan
+
+    return {
+        "structure_trend": structure_trend,
+        "cycle_state": cycle_state,
+        "last_swing": "قمة" if last_swing["type"] == "high" else "قاع",
+        "last_swing_price": last_swing["price"],
+        "price_position": price_position,
+        "swings_count": len(swings),
+    }, swings
 
 def run_backtest_v1(df: pd.DataFrame, hold_days: int = 20, cost_pct: float = 0.20) -> tuple[pd.DataFrame, dict]:
     """
@@ -222,6 +374,9 @@ if data.empty:
     st.stop()
 
 df = add_market_features(data)
+df = detect_fractal_swings(df, left=pivot_window, right=pivot_window)
+fractal_summary, swing_sequence = analyze_fractal_structure(df)
+
 latest = df.dropna().iloc[-1]
 
 market_state, suggested_action = classify_market_state(latest)
@@ -289,6 +444,65 @@ with st.expander("عرض آخر 5 أسعار إغلاق"):
     st.dataframe(df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(5), use_container_width=True)
 
 st.divider()
+
+st.divider()
+
+st.subheader("Fractal Structure v1")
+
+st.write(
+    """
+    هذه الطبقة لا تعطي توصية تداول. وظيفتها قراءة البنية السعرية:
+    - قمم وقيعان مؤكدة
+    - آخر دورة سعرية
+    - اتجاه البنية
+    - موقع السعر داخل آخر نطاق بنيوي
+    """
+)
+
+fs_col1, fs_col2, fs_col3, fs_col4 = st.columns(4)
+
+with fs_col1:
+    st.metric("اتجاه البنية", fractal_summary["structure_trend"])
+
+with fs_col2:
+    st.metric("حالة الدورة", fractal_summary["cycle_state"])
+
+with fs_col3:
+    st.metric("آخر نقطة مؤكدة", fractal_summary["last_swing"])
+
+with fs_col4:
+    if pd.isna(fractal_summary["price_position"]):
+        st.metric("موقع السعر داخل الدورة", "غير متاح")
+    else:
+        st.metric("موقع السعر داخل الدورة", f"{fractal_summary['price_position']:.2f}%")
+
+fs_col5, fs_col6 = st.columns(2)
+
+with fs_col5:
+    st.metric("عدد القمم والقيعان المؤكدة", fractal_summary["swings_count"])
+
+with fs_col6:
+    if pd.isna(fractal_summary["last_swing_price"]):
+        st.metric("سعر آخر نقطة مؤكدة", "غير متاح")
+    else:
+        st.metric("سعر آخر نقطة مؤكدة", f"{fractal_summary['last_swing_price']:.2f}")
+
+if fractal_summary["structure_trend"] == "بنية صاعدة":
+    st.success("البنية الحالية صاعدة حسب القمم والقيعان المؤكدة.")
+elif fractal_summary["structure_trend"] == "بنية هابطة":
+    st.error("البنية الحالية هابطة حسب القمم والقيعان المؤكدة.")
+elif fractal_summary["structure_trend"] == "بنية مختلطة":
+    st.warning("البنية الحالية مختلطة؛ لا توجد قراءة بنيوية واضحة.")
+else:
+    st.info("لا توجد بيانات كافية لاستخراج بنية مؤكدة.")
+
+with st.expander("عرض آخر 12 نقطة Fractal Swing"):
+    if not swing_sequence:
+        st.write("لا توجد قمم أو قيعان مؤكدة.")
+    else:
+        swings_df = pd.DataFrame(swing_sequence).tail(12)
+        swings_df["date"] = swings_df["date"].astype(str)
+        st.dataframe(swings_df, use_container_width=True)
 
 st.subheader("Backtest v1")
 
@@ -406,6 +620,29 @@ fig.add_trace(
         y=df["ma200"],
         mode="lines",
         name="MA 200"
+    )
+)
+
+swing_highs = df[df["swing_high"]]
+swing_lows = df[df["swing_low"]]
+
+fig.add_trace(
+    go.Scatter(
+        x=swing_highs["Date"],
+        y=swing_highs["High"],
+        mode="markers",
+        name="Fractal High",
+        marker=dict(symbol="triangle-down", size=10)
+    )
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=swing_lows["Date"],
+        y=swing_lows["Low"],
+        mode="markers",
+        name="Fractal Low",
+        marker=dict(symbol="triangle-up", size=10)
     )
 )
 
