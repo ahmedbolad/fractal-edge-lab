@@ -35,6 +35,14 @@ pivot_window = st.slider(
     step=1
 )
 
+min_swing_atr = st.slider(
+    "فلترة قوة الحركة ATR",
+    min_value=0.5,
+    max_value=5.0,
+    value=1.5,
+    step=0.5
+)
+
 @st.cache_data(show_spinner=False)
 def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     data = yf.download(
@@ -209,9 +217,43 @@ def build_swing_sequence(df: pd.DataFrame) -> list[dict]:
 
     return cleaned
 
+def filter_swings_by_atr(swings: list[dict], df: pd.DataFrame, min_atr_multiple: float = 1.5) -> list[dict]:
+    """
+    Fractal Structure v2:
+    فلترة القمم والقيعان بحيث لا نقبل إلا التحركات التي تتجاوز حدًا أدنى من ATR.
+    الهدف: تقليل الضجيج والتركيز على البنية السعرية الأوضح.
+    """
 
-def analyze_fractal_structure(df: pd.DataFrame) -> tuple[dict, list[dict]]:
-    swings = build_swing_sequence(df)
+    if len(swings) < 2:
+        return swings
+
+    filtered = [swings[0]]
+
+    for swing in swings[1:]:
+        last = filtered[-1]
+
+        atr_value = df.loc[swing["index"], "atr14"]
+
+        if pd.isna(atr_value) or atr_value == 0:
+            continue
+
+        price_move = abs(swing["price"] - last["price"])
+        required_move = atr_value * min_atr_multiple
+
+        if price_move >= required_move:
+            if swing["type"] != last["type"]:
+                filtered.append(swing)
+            else:
+                if swing["type"] == "high" and swing["price"] > last["price"]:
+                    filtered[-1] = swing
+                elif swing["type"] == "low" and swing["price"] < last["price"]:
+                    filtered[-1] = swing
+
+    return filtered
+
+def analyze_fractal_structure(df: pd.DataFrame, min_swing_atr: float = 1.5) -> tuple[dict, list[dict]]:
+    raw_swings = build_swing_sequence(df)
+swings = filter_swings_by_atr(raw_swings, df, min_atr_multiple=min_swing_atr)
 
     if len(swings) < 4:
         return {
@@ -375,7 +417,7 @@ if data.empty:
 
 df = add_market_features(data)
 df = detect_fractal_swings(df, left=pivot_window, right=pivot_window)
-fractal_summary, swing_sequence = analyze_fractal_structure(df)
+fractal_summary, swing_sequence = analyze_fractal_structure(df, min_swing_atr=min_swing_atr)
 
 latest = df.dropna().iloc[-1]
 
