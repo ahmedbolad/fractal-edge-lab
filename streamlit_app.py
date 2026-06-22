@@ -12,7 +12,6 @@ st.set_page_config(
 
 st.title("Fractal Edge Lab")
 st.caption("منصة شخصية خاصة لتحليل الأسهم واختبار البنية السعرية")
-
 st.warning("هذه أداة شخصية للتحليل والاختبار، وليست نصيحة مالية أو توصية تداول.")
 
 DEFAULT_SYMBOLS = [
@@ -23,25 +22,43 @@ DEFAULT_SYMBOLS = [
 
 with st.sidebar:
     st.header("الإعدادات")
+
     symbol = st.selectbox("اختر السهم", DEFAULT_SYMBOLS, index=7)
     period = st.selectbox("الفترة التاريخية", ["1y", "2y", "5y", "10y"], index=2)
     interval = st.selectbox("الإطار الزمني", ["1d", "1wk"], index=0)
 
-pivot_window = st.slider(
-    "حساسية القمم والقيعان",
-    min_value=2,
-    max_value=10,
-    value=3,
-    step=1
-)
+    st.divider()
 
-min_swing_atr = st.slider(
-    "فلترة قوة الحركة ATR",
-    min_value=0.5,
-    max_value=5.0,
-    value=1.5,
-    step=0.5
-)
+    pivot_window = st.slider(
+        "حساسية القمم والقيعان",
+        min_value=2,
+        max_value=10,
+        value=3,
+        step=1
+    )
+
+    min_swing_atr = st.slider(
+        "فلترة قوة الحركة ATR",
+        min_value=0.5,
+        max_value=5.0,
+        value=1.5,
+        step=0.5
+    )
+
+    train_ratio = st.slider(
+        "نسبة التدريب / المراقبة من البيانات",
+        min_value=0.50,
+        max_value=0.85,
+        value=0.70,
+        step=0.05
+    )
+
+    st.divider()
+
+    if st.button("تحديث البيانات ومسح الكاش"):
+        st.cache_data.clear()
+        st.rerun()
+
 
 @st.cache_data(show_spinner=False)
 def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
@@ -71,7 +88,6 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
         data[col] = pd.to_numeric(data[col], errors="coerce")
 
     data = data.dropna().reset_index(drop=True)
-
     return data
 
 
@@ -88,6 +104,7 @@ def add_market_features(data: pd.DataFrame) -> pd.DataFrame:
     tr1 = df["High"] - df["Low"]
     tr2 = (df["High"] - previous_close).abs()
     tr3 = (df["Low"] - previous_close).abs()
+
     df["true_range"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr14"] = df["true_range"].rolling(14).mean()
     df["atr_pct"] = df["atr14"] / df["Close"] * 100
@@ -116,72 +133,60 @@ def classify_market_state(row: pd.Series) -> tuple[str, str]:
         return "غير كافٍ", "No Trade"
 
     if close > ma20 > ma50 > ma200:
-        state = "اتجاه صاعد منظم"
-        action = "Watch"
-    elif close < ma20 < ma50 < ma200:
-        state = "اتجاه هابط منظم"
-        action = "Avoid"
-    elif compression < 0.75:
-        state = "ضغط تذبذب محتمل"
-        action = "Watch for Breakout"
-    elif close > ma50 and ma20 > ma50:
-        state = "ميل صاعد"
-        action = "Watch"
-    elif close < ma50 and ma20 < ma50:
-        state = "ميل هابط"
-        action = "Avoid"
-    else:
-        state = "تذبذب / ضجيج"
-        action = "No Trade"
+        return "اتجاه صاعد منظم", "Watch"
 
-    return state, action
+    if close < ma20 < ma50 < ma200:
+        return "اتجاه هابط منظم", "Avoid"
+
+    if compression < 0.75:
+        return "ضغط تذبذب محتمل", "Watch for Breakout"
+
+    if close > ma50 and ma20 > ma50:
+        return "ميل صاعد", "Watch"
+
+    if close < ma50 and ma20 < ma50:
+        return "ميل هابط", "Avoid"
+
+    return "تذبذب / ضجيج", "No Trade"
+
 
 def detect_fractal_swings(df: pd.DataFrame, left: int = 3, right: int = 3) -> pd.DataFrame:
     """
-    Fractal Swing Detection v1:
-    - القمة مؤكدة إذا كان High أعلى من عدد شموع قبلها وبعدها.
-    - القاع مؤكد إذا كان Low أقل من عدد شموع قبلها وبعدها.
-    - ملاحظة: هذه قمم/قيعان مؤكدة، أي تحتاج right شموع للتأكيد.
+    كشف قمم وقيعان مؤكد بطريقة أسرع من loop.
+    القمة/القاع لا يتأكدان إلا بعد مرور right شموع.
+    هذا مناسب للعرض البصري، لكنه يحتاج تأخيرًا صريحًا قبل أي Backtest بنيوي.
     """
 
     out = df.copy()
-    out["swing_high"] = False
-    out["swing_low"] = False
+    window = left + right + 1
+    center = left
 
-    for i in range(left, len(out) - right):
-        current_high = out.loc[i, "High"]
-        current_low = out.loc[i, "Low"]
+    rolling_high = out["High"].rolling(window=window, center=True).max()
+    rolling_low = out["Low"].rolling(window=window, center=True).min()
 
-        left_highs = out.loc[i - left:i - 1, "High"]
-        right_highs = out.loc[i + 1:i + right, "High"]
+    out["swing_high"] = (out["High"] == rolling_high)
+    out["swing_low"] = (out["Low"] == rolling_low)
 
-        left_lows = out.loc[i - left:i - 1, "Low"]
-        right_lows = out.loc[i + 1:i + right, "Low"]
-
-        if current_high > left_highs.max() and current_high > right_highs.max():
-            out.loc[i, "swing_high"] = True
-
-        if current_low < left_lows.min() and current_low < right_lows.min():
-            out.loc[i, "swing_low"] = True
+    out.loc[:left - 1, ["swing_high", "swing_low"]] = False
+    out.loc[len(out) - right:, ["swing_high", "swing_low"]] = False
 
     return out
 
 
-def build_swing_sequence(df: pd.DataFrame) -> list[dict]:
-    """
-    يحول القمم والقيعان إلى سلسلة بنيوية مرتبة.
-    إذا ظهرت قمتان متتاليتان، نحتفظ بالأعلى.
-    إذا ظهر قاعان متتاليان، نحتفظ بالأدنى.
-    """
-
+def build_swing_sequence(df: pd.DataFrame, confirmation_delay: int = 0) -> list[dict]:
     raw_swings = []
 
     for idx, row in df.iterrows():
+        confirmed_index = idx + confirmation_delay
+        confirmed_index = min(confirmed_index, len(df) - 1)
+
         if row.get("swing_high", False):
             raw_swings.append(
                 {
                     "index": idx,
+                    "confirmed_index": confirmed_index,
                     "date": row["Date"],
+                    "confirmed_date": df.loc[confirmed_index, "Date"],
                     "type": "high",
                     "price": float(row["High"]),
                 }
@@ -191,7 +196,9 @@ def build_swing_sequence(df: pd.DataFrame) -> list[dict]:
             raw_swings.append(
                 {
                     "index": idx,
+                    "confirmed_index": confirmed_index,
                     "date": row["Date"],
+                    "confirmed_date": df.loc[confirmed_index, "Date"],
                     "type": "low",
                     "price": float(row["Low"]),
                 }
@@ -217,11 +224,15 @@ def build_swing_sequence(df: pd.DataFrame) -> list[dict]:
 
     return cleaned
 
-def filter_swings_by_atr(swings: list[dict], df: pd.DataFrame, min_atr_multiple: float = 1.5) -> list[dict]:
+
+def filter_swings_by_atr(
+    swings: list[dict],
+    df: pd.DataFrame,
+    min_atr_multiple: float = 1.5
+) -> list[dict]:
     """
-    Fractal Structure v2:
-    فلترة القمم والقيعان بحيث لا نقبل إلا التحركات التي تتجاوز حدًا أدنى من ATR.
-    الهدف: تقليل الضجيج والتركيز على البنية السعرية الأوضح.
+    فلترة القمم والقيعان مع الحفاظ على تناوب high / low.
+    هذه نسخة آمنة بما يكفي للعرض، ولا تزال تحتاج اختبارًا عند بناء Backtest بنيوي.
     """
 
     if len(swings) < 2:
@@ -231,28 +242,33 @@ def filter_swings_by_atr(swings: list[dict], df: pd.DataFrame, min_atr_multiple:
 
     for swing in swings[1:]:
         last = filtered[-1]
-
         atr_value = df.loc[swing["index"], "atr14"]
 
         if pd.isna(atr_value) or atr_value == 0:
+            continue
+
+        if swing["type"] == last["type"]:
+            if swing["type"] == "high" and swing["price"] > last["price"]:
+                filtered[-1] = swing
+            elif swing["type"] == "low" and swing["price"] < last["price"]:
+                filtered[-1] = swing
             continue
 
         price_move = abs(swing["price"] - last["price"])
         required_move = atr_value * min_atr_multiple
 
         if price_move >= required_move:
-            if swing["type"] != last["type"]:
-                filtered.append(swing)
-            else:
-                if swing["type"] == "high" and swing["price"] > last["price"]:
-                    filtered[-1] = swing
-                elif swing["type"] == "low" and swing["price"] < last["price"]:
-                    filtered[-1] = swing
+            filtered.append(swing)
 
     return filtered
 
-def analyze_fractal_structure(df: pd.DataFrame, min_swing_atr: float = 1.5) -> tuple[dict, list[dict]]:
-    raw_swings = build_swing_sequence(df)
+
+def analyze_fractal_structure(
+    df: pd.DataFrame,
+    min_swing_atr: float = 1.5,
+    confirmation_delay: int = 0
+) -> tuple[dict, list[dict]]:
+    raw_swings = build_swing_sequence(df, confirmation_delay=confirmation_delay)
     swings = filter_swings_by_atr(raw_swings, df, min_atr_multiple=min_swing_atr)
 
     if len(swings) < 4:
@@ -289,13 +305,13 @@ def analyze_fractal_structure(df: pd.DataFrame, min_swing_atr: float = 1.5) -> t
         structure_trend = "غير كافٍ"
 
     last_swing = swings[-1]
-    current_close = float(df["Close"].iloc[-1])
 
     if last_swing["type"] == "low":
         cycle_state = "بعد قاع مؤكد / محاولة بداية دورة صاعدة"
     else:
         cycle_state = "بعد قمة مؤكدة / احتمال تصحيح أو نهاية موجة"
 
+    current_close = float(df["Close"].iloc[-1])
     recent_swings = swings[-4:]
     recent_prices = [s["price"] for s in recent_swings]
     recent_min = min(recent_prices)
@@ -315,16 +331,8 @@ def analyze_fractal_structure(df: pd.DataFrame, min_swing_atr: float = 1.5) -> t
         "swings_count": len(swings),
     }, swings
 
-def compute_cycle_quality(df: pd.DataFrame, swings: list[dict]) -> dict:
-    """
-    Cycle Quality Score v1:
-    يقيس جودة آخر دورة سعرية مؤكدة بناءً على:
-    - حجم الحركة بين آخر نقطتين بنيويتين
-    - حجم الحركة مقارنة بـ ATR
-    - موقع السعر الحالي داخل آخر دورة
-    - كثافة القمم والقيعان كمؤشر ضجيج
-    """
 
+def compute_cycle_quality(df: pd.DataFrame, swings: list[dict]) -> dict:
     if len(swings) < 2:
         return {
             "cycle_direction": "غير كافٍ",
@@ -349,9 +357,10 @@ def compute_cycle_quality(df: pd.DataFrame, swings: list[dict]) -> dict:
     atr_value = df.loc[last_swing["index"], "atr14"]
 
     if pd.isna(atr_value) or atr_value == 0:
-        atr_value = df["atr14"].dropna().iloc[-1]
+        atr_values = df["atr14"].dropna()
+        atr_value = atr_values.iloc[-1] if len(atr_values) else np.nan
 
-    move_atr = move_abs / atr_value if atr_value and atr_value > 0 else np.nan
+    move_atr = move_abs / atr_value if not pd.isna(atr_value) and atr_value > 0 else np.nan
 
     low_bound = min(previous_price, last_price)
     high_bound = max(previous_price, last_price)
@@ -405,18 +414,111 @@ def compute_cycle_quality(df: pd.DataFrame, swings: list[dict]) -> dict:
         "cycle_reading": cycle_reading
     }
 
-def run_backtest_v1(df: pd.DataFrame, hold_days: int = 20, cost_pct: float = 0.20) -> tuple[pd.DataFrame, dict]:
+
+def make_personal_summary(
+    fractal_summary: dict,
+    cycle_quality: dict,
+    market_state: str
+) -> dict:
+    structure = fractal_summary["structure_trend"]
+    quality = cycle_quality["cycle_quality"]
+    position = cycle_quality["cycle_position"]
+
+    if structure == "بنية صاعدة" and quality in ["قوية", "متوسطة"]:
+        if not pd.isna(position) and position >= 75:
+            decision = "انتظار تصحيح"
+            reason = "البنية صاعدة، لكن السعر متقدم داخل الدورة. لا نطارد الحركة."
+            waiting_for = "قاع بنيوي جديد، عودة لمنطقة دعم، أو دورة جديدة أوضح."
+        elif not pd.isna(position) and position <= 35:
+            decision = "مراقبة فرصة"
+            reason = "البنية صاعدة والسعر أقرب لبداية الدورة، لكن نحتاج تأكيد."
+            waiting_for = "تأكيد سعري بعد قاع بنيوي أو كسر صاعد واضح."
+        else:
+            decision = "مراقبة"
+            reason = "البنية صاعدة والدورة مقبولة، لكن القرار يحتاج شرط واضح."
+            waiting_for = "تأكيد من السعر أو من الفريم الأكبر."
+    elif structure == "بنية هابطة":
+        decision = "تجنب"
+        reason = "البنية هابطة حسب القمم والقيعان المؤكدة."
+        waiting_for = "تحول بنيوي واضح قبل التفكير بأي فرصة."
+    elif quality in ["ضجيج", "ضجيج مرتفع", "ضعيفة"]:
+        decision = "لا تداول"
+        reason = "الدورة الحالية ضعيفة أو ملوثة بالضجيج."
+        waiting_for = "بنية أوضح وعدد أقل من الإشارات العشوائية."
+    else:
+        decision = "انتظار"
+        reason = "لا توجد قراءة بنيوية كافية لاتخاذ قرار شخصي."
+        waiting_for = "تكوّن دورة أوضح."
+
+    return {
+        "decision": decision,
+        "reason": reason,
+        "waiting_for": waiting_for,
+        "market_state": market_state
+    }
+
+
+def summarize_trades(
+    trades_df: pd.DataFrame,
+    df: pd.DataFrame,
+    hold_days: int,
+    start_index: int = 200
+) -> dict:
+    if len(df) <= start_index + 1:
+        buy_hold_return = 0.0
+    else:
+        buy_hold_return = (df["Close"].iloc[-1] / df["Close"].iloc[start_index] - 1) * 100
+
+    if trades_df.empty:
+        return {
+            "trades": 0,
+            "win_rate": 0.0,
+            "avg_return": 0.0,
+            "best_trade": 0.0,
+            "worst_trade": 0.0,
+            "profit_factor": 0.0,
+            "strategy_total_return": 0.0,
+            "buy_hold_return": buy_hold_return,
+            "time_in_market": 0.0,
+        }
+
+    wins = trades_df[trades_df["net_return_pct"] > 0]
+    losses = trades_df[trades_df["net_return_pct"] <= 0]
+
+    total_profit = wins["net_return_pct"].sum()
+    total_loss = abs(losses["net_return_pct"].sum())
+    profit_factor = float("inf") if total_loss == 0 else total_profit / total_loss
+
+    strategy_total_return = ((1 + trades_df["net_return_pct"] / 100).prod() - 1) * 100
+    available_days = max(len(df) - start_index, 1)
+    time_in_market = min((len(trades_df) * hold_days) / available_days * 100, 100)
+
+    return {
+        "trades": len(trades_df),
+        "win_rate": len(wins) / len(trades_df) * 100,
+        "avg_return": trades_df["net_return_pct"].mean(),
+        "best_trade": trades_df["net_return_pct"].max(),
+        "worst_trade": trades_df["net_return_pct"].min(),
+        "profit_factor": profit_factor,
+        "strategy_total_return": strategy_total_return,
+        "buy_hold_return": buy_hold_return,
+        "time_in_market": time_in_market,
+    }
+
+
+def run_backtest_v1(
+    df: pd.DataFrame,
+    hold_days: int = 20,
+    cost_pct: float = 0.20,
+    start_index: int = 200
+) -> tuple[pd.DataFrame, dict]:
     """
-    Backtest v1:
-    - الإشارة تظهر عند إغلاق اليوم إذا كان:
-      Close > MA20 > MA50 > MA200
-    - الدخول يكون في افتتاح اليوم التالي حتى نتجنب تسريب المستقبل.
-    - الخروج بعد عدد أيام محدد.
-    - cost_pct تمثل تكلفة إجمالية تقريبية للصفقة: دخول + خروج.
+    اختبار تقني لمحرك الـ Backtesting فقط.
+    لا يختبر Fractal Structure ولا Cycle Quality.
     """
 
     trades = []
-    i = 200
+    i = start_index
 
     while i < len(df) - hold_days - 1:
         row = df.iloc[i]
@@ -452,52 +554,73 @@ def run_backtest_v1(df: pd.DataFrame, hold_days: int = 20, cost_pct: float = 0.2
                 }
             )
 
-            # منع تداخل الصفقات
             i = exit_index + 1
         else:
             i += 1
 
     trades_df = pd.DataFrame(trades)
-
-    if trades_df.empty:
-        stats = {
-            "trades": 0,
-            "win_rate": 0.0,
-            "avg_return": 0.0,
-            "best_trade": 0.0,
-            "worst_trade": 0.0,
-            "profit_factor": 0.0,
-            "strategy_total_return": 0.0,
-            "buy_hold_return": 0.0,
-        }
-        return trades_df, stats
-
-    wins = trades_df[trades_df["net_return_pct"] > 0]
-    losses = trades_df[trades_df["net_return_pct"] <= 0]
-
-    total_profit = wins["net_return_pct"].sum()
-    total_loss = abs(losses["net_return_pct"].sum())
-
-    if total_loss == 0:
-        profit_factor = float("inf")
-    else:
-        profit_factor = total_profit / total_loss
-
-    strategy_total_return = ((1 + trades_df["net_return_pct"] / 100).prod() - 1) * 100
-    buy_hold_return = (df["Close"].iloc[-1] / df["Close"].iloc[200] - 1) * 100
-
-    stats = {
-        "trades": len(trades_df),
-        "win_rate": len(wins) / len(trades_df) * 100,
-        "avg_return": trades_df["net_return_pct"].mean(),
-        "best_trade": trades_df["net_return_pct"].max(),
-        "worst_trade": trades_df["net_return_pct"].min(),
-        "profit_factor": profit_factor,
-        "strategy_total_return": strategy_total_return,
-        "buy_hold_return": buy_hold_return,
-    }
+    stats = summarize_trades(
+        trades_df=trades_df,
+        df=df,
+        hold_days=hold_days,
+        start_index=start_index
+    )
 
     return trades_df, stats
+
+
+def split_train_test(df: pd.DataFrame, train_ratio: float = 0.70) -> tuple[pd.DataFrame, pd.DataFrame]:
+    split_index = int(len(df) * train_ratio)
+    train_df = df.iloc[:split_index].reset_index(drop=True)
+    test_df = df.iloc[split_index:].reset_index(drop=True)
+    return train_df, test_df
+
+
+def display_backtest_stats(label: str, stats: dict) -> None:
+    st.markdown(f"### {label}")
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        st.metric("عدد الصفقات", f"{stats['trades']}")
+
+    with c2:
+        st.metric("نسبة النجاح", f"{stats['win_rate']:.2f}%")
+
+    with c3:
+        st.metric("متوسط عائد الصفقة", f"{stats['avg_return']:.2f}%")
+
+    with c4:
+        if stats["profit_factor"] == float("inf"):
+            st.metric("Profit Factor", "∞")
+        else:
+            st.metric("Profit Factor", f"{stats['profit_factor']:.2f}")
+
+    c5, c6, c7, c8 = st.columns(4)
+
+    with c5:
+        st.metric("أفضل صفقة", f"{stats['best_trade']:.2f}%")
+
+    with c6:
+        st.metric("أسوأ صفقة", f"{stats['worst_trade']:.2f}%")
+
+    with c7:
+        st.metric("عائد الاستراتيجية", f"{stats['strategy_total_return']:.2f}%")
+
+    with c8:
+        st.metric("Buy & Hold", f"{stats['buy_hold_return']:.2f}%")
+
+    c9, c10 = st.columns(2)
+
+    with c9:
+        st.metric("نسبة الوقت داخل السوق", f"{stats['time_in_market']:.2f}%")
+
+    with c10:
+        if stats["trades"] < 20:
+            st.warning("عدد الصفقات أقل من 20؛ الإحصائيات ضعيفة.")
+        else:
+            st.info("عدد الصفقات مقبول مبدئيًا، لكنه لا يكفي وحده للحكم.")
+
 
 data = load_data(symbol, period, interval)
 
@@ -507,365 +630,326 @@ if data.empty:
 
 df = add_market_features(data)
 df = detect_fractal_swings(df, left=pivot_window, right=pivot_window)
-fractal_summary, swing_sequence = analyze_fractal_structure(df, min_swing_atr=min_swing_atr)
+
+fractal_summary, swing_sequence = analyze_fractal_structure(
+    df,
+    min_swing_atr=min_swing_atr,
+    confirmation_delay=pivot_window
+)
+
 cycle_quality = compute_cycle_quality(df, swing_sequence)
 
 latest = df.dropna().iloc[-1]
-
 market_state, suggested_action = classify_market_state(latest)
 
-st.subheader(f"تحليل السهم: {symbol}")
-
-col1, col2, col3, col4 = st.columns(4)
+personal_summary = make_personal_summary(
+    fractal_summary,
+    cycle_quality,
+    market_state
+)
 
 latest_close = float(latest["Close"])
 first_close = float(df["Close"].iloc[0])
 total_return = (latest_close / first_close - 1) * 100
 
-with col1:
-    st.metric("آخر سعر", f"{latest_close:.2f}")
+tab_summary, tab_structure, tab_chart, tab_tests = st.tabs(
+    ["القرار المختصر", "البنية والدورة", "الشارت", "الاختبارات والبيانات"]
+)
 
-with col2:
-    st.metric("العائد خلال الفترة", f"{total_return:.2f}%")
+with tab_summary:
+    st.subheader(f"ملخص شخصي: {symbol}")
 
-with col3:
-    st.metric("عدد الشموع", f"{len(df):,}")
+    main_col1, main_col2, main_col3 = st.columns(3)
 
-with col4:
-    st.metric("حالة السوق", market_state)
+    with main_col1:
+        st.metric("القرار الشخصي", personal_summary["decision"])
 
-col5, col6, col7, col8 = st.columns(4)
+    with main_col2:
+        st.metric("البنية", fractal_summary["structure_trend"])
 
-with col5:
-    st.metric("الإجراء الشخصي", suggested_action)
+    with main_col3:
+        st.metric("جودة الدورة", cycle_quality["cycle_quality"])
 
-with col6:
-    st.metric("ATR %", f"{latest['atr_pct']:.2f}%")
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
 
-with col7:
-    st.metric("البعد عن قمة 20", f"{latest['distance_from_high_20_pct']:.2f}%")
+    with metric_col1:
+        st.metric("آخر سعر", f"{latest_close:.2f}")
 
-with col8:
-    st.metric("البعد عن قاع 20", f"{latest['distance_from_low_20_pct']:.2f}%")
+    with metric_col2:
+        if pd.isna(cycle_quality["cycle_position"]):
+            st.metric("موقع السعر داخل الدورة", "غير متاح")
+        else:
+            st.metric("موقع السعر داخل الدورة", f"{cycle_quality['cycle_position']:.2f}%")
+
+    with metric_col3:
+        if pd.isna(cycle_quality["cycle_move_atr"]):
+            st.metric("حجم الدورة بـ ATR", "غير متاح")
+        else:
+            st.metric("حجم الدورة بـ ATR", f"{cycle_quality['cycle_move_atr']:.2f}x")
+
+    with metric_col4:
+        st.metric("حالة السوق", market_state)
+
+    st.info(f"السبب: {personal_summary['reason']}")
+    st.warning(f"ننتظر: {personal_summary['waiting_for']}")
 
     st.divider()
 
-st.subheader("فحص جودة البيانات")
-
-quality_col1, quality_col2, quality_col3, quality_col4 = st.columns(4)
-
-with quality_col1:
-    st.metric("أول تاريخ", str(df["Date"].iloc[0].date()))
-
-with quality_col2:
-    st.metric("آخر تاريخ", str(df["Date"].iloc[-1].date()))
-
-with quality_col3:
-    st.metric("أدنى سعر", f"{df['Close'].min():.2f}")
-
-with quality_col4:
-    st.metric("أعلى سعر", f"{df['Close'].max():.2f}")
-
-missing_values = int(df[["Open", "High", "Low", "Close", "Volume"]].isna().sum().sum())
-
-if missing_values > 0:
-    st.error(f"يوجد {missing_values} قيمة ناقصة في البيانات.")
-else:
-    st.success("البيانات لا تحتوي على قيم ناقصة في الأعمدة الأساسية.")
-
-with st.expander("عرض آخر 5 أسعار إغلاق"):
-    st.dataframe(df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(5), use_container_width=True)
-
-st.divider()
-
-st.divider()
-
-st.subheader("Fractal Structure v1")
-
-st.write(
-    """
-    هذه الطبقة لا تعطي توصية تداول. وظيفتها قراءة البنية السعرية:
-    - قمم وقيعان مؤكدة
-    - آخر دورة سعرية
-    - اتجاه البنية
-    - موقع السعر داخل آخر نطاق بنيوي
-    """
-)
-
-fs_col1, fs_col2, fs_col3, fs_col4 = st.columns(4)
-
-with fs_col1:
-    st.metric("اتجاه البنية", fractal_summary["structure_trend"])
-
-with fs_col2:
-    st.metric("حالة الدورة", fractal_summary["cycle_state"])
-
-with fs_col3:
-    st.metric("آخر نقطة مؤكدة", fractal_summary["last_swing"])
-
-with fs_col4:
-    if pd.isna(fractal_summary["price_position"]):
-        st.metric("موقع السعر داخل الدورة", "غير متاح")
-    else:
-        st.metric("موقع السعر داخل الدورة", f"{fractal_summary['price_position']:.2f}%")
-
-fs_col5, fs_col6 = st.columns(2)
-
-with fs_col5:
-    st.metric("عدد القمم والقيعان المؤكدة", fractal_summary["swings_count"])
-
-with fs_col6:
-    if pd.isna(fractal_summary["last_swing_price"]):
-        st.metric("سعر آخر نقطة مؤكدة", "غير متاح")
-    else:
-        st.metric("سعر آخر نقطة مؤكدة", f"{fractal_summary['last_swing_price']:.2f}")
-
-if fractal_summary["structure_trend"] == "بنية صاعدة":
-    st.success("البنية الحالية صاعدة حسب القمم والقيعان المؤكدة.")
-elif fractal_summary["structure_trend"] == "بنية هابطة":
-    st.error("البنية الحالية هابطة حسب القمم والقيعان المؤكدة.")
-elif fractal_summary["structure_trend"] == "بنية مختلطة":
-    st.warning("البنية الحالية مختلطة؛ لا توجد قراءة بنيوية واضحة.")
-else:
-    st.info("لا توجد بيانات كافية لاستخراج بنية مؤكدة.")
-
-with st.expander("عرض آخر 12 نقطة Fractal Swing"):
-    if not swing_sequence:
-        st.write("لا توجد قمم أو قيعان مؤكدة.")
-    else:
-        swings_df = pd.DataFrame(swing_sequence).tail(12)
-        swings_df["date"] = swings_df["date"].astype(str)
-        st.dataframe(swings_df, use_container_width=True)
-
-st.divider()
-
-st.subheader("Cycle Quality Score v1")
-
-st.write(
-    """
-    هذه الطبقة تقيس جودة آخر دورة سعرية مؤكدة.  
-    الهدف ليس إعطاء توصية، بل فصل البنية المهمة عن الضجيج.
-    """
-)
-
-cq_col1, cq_col2, cq_col3, cq_col4 = st.columns(4)
-
-with cq_col1:
-    st.metric("اتجاه آخر دورة", cycle_quality["cycle_direction"])
-
-with cq_col2:
-    if pd.isna(cycle_quality["cycle_move_pct"]):
-        st.metric("حجم الدورة %", "غير متاح")
-    else:
-        st.metric("حجم الدورة %", f"{cycle_quality['cycle_move_pct']:.2f}%")
-
-with cq_col3:
-    if pd.isna(cycle_quality["cycle_move_atr"]):
-        st.metric("حجم الدورة بـ ATR", "غير متاح")
-    else:
-        st.metric("حجم الدورة بـ ATR", f"{cycle_quality['cycle_move_atr']:.2f}x")
-
-with cq_col4:
-    st.metric("جودة الدورة", cycle_quality["cycle_quality"])
-
-cq_col5, cq_col6 = st.columns(2)
-
-with cq_col5:
-    if pd.isna(cycle_quality["cycle_position"]):
-        st.metric("موقع السعر داخل الدورة", "غير متاح")
-    else:
-        st.metric("موقع السعر داخل الدورة", f"{cycle_quality['cycle_position']:.2f}%")
-
-with cq_col6:
-    if pd.isna(cycle_quality["swing_density"]):
-        st.metric("كثافة القمم والقيعان", "غير متاح")
-    else:
-        st.metric("كثافة القمم والقيعان", f"{cycle_quality['swing_density']:.2f}%")
-
-if cycle_quality["cycle_quality"] == "قوية":
-    st.success(cycle_quality["cycle_reading"])
-elif cycle_quality["cycle_quality"] == "متوسطة":
-    st.info(cycle_quality["cycle_reading"])
-elif cycle_quality["cycle_quality"] == "ضعيفة":
-    st.warning(cycle_quality["cycle_reading"])
-else:
-    st.error(cycle_quality["cycle_reading"])
-
-st.subheader("Backtest v1")
-
-st.write(
-    """
-    هذا اختبار تاريخي أولي وبسيط جدًا.
-
-    القاعدة:
-    - تظهر الإشارة عندما يكون السعر فوق MA20 و MA50 و MA200.
-    - الدخول يتم في افتتاح اليوم التالي.
-    - الخروج بعد عدد أيام محدد.
-    - يتم منع تداخل الصفقات.
-    - يتم خصم تكلفة تقديرية للصفقة.
-    """
-)
-
-bt_col_settings_1, bt_col_settings_2 = st.columns(2)
-
-with bt_col_settings_1:
-    hold_days = st.slider("مدة الاحتفاظ بالصفقة", min_value=5, max_value=60, value=20, step=5)
-
-with bt_col_settings_2:
-    cost_pct = st.number_input(
-        "تكلفة الصفقة الإجمالية % تقريبية",
-        min_value=0.0,
-        max_value=5.0,
-        value=0.20,
-        step=0.05
+    st.caption(
+        "هذا الملخص قراءة بنيوية شخصية فقط. لا يمثل إشارة دخول، ولا يعتمد على Backtest فراكتلي بعد."
     )
 
-trades_df, bt_stats = run_backtest_v1(df.dropna().reset_index(drop=True), hold_days=hold_days, cost_pct=cost_pct)
+with tab_structure:
+    st.subheader("Fractal Structure + Cycle Quality")
 
-bt_col1, bt_col2, bt_col3, bt_col4 = st.columns(4)
+    st.warning(
+        f"""
+        تنبيه مهم: القمم والقيعان هنا مؤكدة بعد مرور {pivot_window} شموع.
+        هذا مناسب للقراءة البصرية، لكنه لا يجوز استخدامه مباشرة في Backtest بدون تأخير زمني،
+        حتى لا يحدث تسريب بيانات مستقبلية.
+        """
+    )
 
-with bt_col1:
-    st.metric("عدد الصفقات", f"{bt_stats['trades']}")
+    st.info(
+        """
+        العتبات الحالية مثل جودة الدورة، كثافة القمم والقيعان، وموقع السعر داخل الدورة
+        افتراضات أولية غير معايرة. لا يتم تعديلها بناءً على سهم واحد حتى لا نقع في overfitting يدوي.
+        """
+    )
 
-with bt_col2:
-    st.metric("نسبة النجاح", f"{bt_stats['win_rate']:.2f}%")
+    fs_col1, fs_col2, fs_col3, fs_col4 = st.columns(4)
 
-with bt_col3:
-    st.metric("متوسط عائد الصفقة", f"{bt_stats['avg_return']:.2f}%")
+    with fs_col1:
+        st.metric("اتجاه البنية", fractal_summary["structure_trend"])
 
-with bt_col4:
-    if bt_stats["profit_factor"] == float("inf"):
-        st.metric("Profit Factor", "∞")
+    with fs_col2:
+        st.metric("آخر نقطة مؤكدة", fractal_summary["last_swing"])
+
+    with fs_col3:
+        st.metric("عدد القمم والقيعان", fractal_summary["swings_count"])
+
+    with fs_col4:
+        if pd.isna(fractal_summary["price_position"]):
+            st.metric("موقع السعر داخل آخر نطاق", "غير متاح")
+        else:
+            st.metric("موقع السعر داخل آخر نطاق", f"{fractal_summary['price_position']:.2f}%")
+
+    cq_col1, cq_col2, cq_col3, cq_col4 = st.columns(4)
+
+    with cq_col1:
+        st.metric("اتجاه آخر دورة", cycle_quality["cycle_direction"])
+
+    with cq_col2:
+        if pd.isna(cycle_quality["cycle_move_pct"]):
+            st.metric("حجم الدورة %", "غير متاح")
+        else:
+            st.metric("حجم الدورة %", f"{cycle_quality['cycle_move_pct']:.2f}%")
+
+    with cq_col3:
+        if pd.isna(cycle_quality["cycle_move_atr"]):
+            st.metric("حجم الدورة بـ ATR", "غير متاح")
+        else:
+            st.metric("حجم الدورة بـ ATR", f"{cycle_quality['cycle_move_atr']:.2f}x")
+
+    with cq_col4:
+        if pd.isna(cycle_quality["swing_density"]):
+            st.metric("كثافة القمم والقيعان", "غير متاح")
+        else:
+            st.metric("كثافة القمم والقيعان", f"{cycle_quality['swing_density']:.2f}%")
+
+    if cycle_quality["cycle_quality"] == "قوية":
+        st.success(cycle_quality["cycle_reading"])
+    elif cycle_quality["cycle_quality"] == "متوسطة":
+        st.info(cycle_quality["cycle_reading"])
+    elif cycle_quality["cycle_quality"] == "ضعيفة":
+        st.warning(cycle_quality["cycle_reading"])
     else:
-        st.metric("Profit Factor", f"{bt_stats['profit_factor']:.2f}")
+        st.error(cycle_quality["cycle_reading"])
 
-bt_col5, bt_col6, bt_col7, bt_col8 = st.columns(4)
+    with st.expander("عرض آخر 12 نقطة Fractal Swing"):
+        if not swing_sequence:
+            st.write("لا توجد قمم أو قيعان مؤكدة.")
+        else:
+            swings_df = pd.DataFrame(swing_sequence).tail(12)
+            swings_df["date"] = swings_df["date"].astype(str)
+            swings_df["confirmed_date"] = swings_df["confirmed_date"].astype(str)
+            st.dataframe(swings_df, use_container_width=True)
 
-with bt_col5:
-    st.metric("أفضل صفقة", f"{bt_stats['best_trade']:.2f}%")
+with tab_chart:
+    st.subheader("الشارت البنيوي")
 
-with bt_col6:
-    st.metric("أسوأ صفقة", f"{bt_stats['worst_trade']:.2f}%")
+    fig = go.Figure()
 
-with bt_col7:
-    st.metric("عائد الاستراتيجية المركب", f"{bt_stats['strategy_total_return']:.2f}%")
+    fig.add_trace(
+        go.Candlestick(
+            x=df["Date"],
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name=symbol
+        )
+    )
 
-with bt_col8:
-    st.metric("Buy & Hold", f"{bt_stats['buy_hold_return']:.2f}%")
+    fig.add_trace(go.Scatter(x=df["Date"], y=df["ma20"], mode="lines", name="MA 20"))
+    fig.add_trace(go.Scatter(x=df["Date"], y=df["ma50"], mode="lines", name="MA 50"))
+    fig.add_trace(go.Scatter(x=df["Date"], y=df["ma200"], mode="lines", name="MA 200"))
 
-if bt_stats["trades"] == 0:
-    st.warning("لا توجد صفقات كافية حسب القاعدة الحالية.")
-else:
-    if bt_stats["strategy_total_return"] > bt_stats["buy_hold_return"]:
-        st.success("الاستراتيجية تفوقت على Buy & Hold في هذا الاختبار الأولي.")
+    swing_highs = df[df["swing_high"]]
+    swing_lows = df[df["swing_low"]]
+
+    fig.add_trace(
+        go.Scatter(
+            x=swing_highs["Date"],
+            y=swing_highs["High"],
+            mode="markers",
+            name="Fractal High",
+            marker=dict(symbol="triangle-down", size=10)
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=swing_lows["Date"],
+            y=swing_lows["Low"],
+            mode="markers",
+            name="Fractal Low",
+            marker=dict(symbol="triangle-up", size=10)
+        )
+    )
+
+    fig.update_layout(
+        height=700,
+        xaxis_rangeslider_visible=False,
+        template="plotly_white"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab_tests:
+    st.subheader("فحص جودة البيانات")
+
+    q_col1, q_col2, q_col3, q_col4 = st.columns(4)
+
+    with q_col1:
+        st.metric("أول تاريخ", str(df["Date"].iloc[0].date()))
+
+    with q_col2:
+        st.metric("آخر تاريخ", str(df["Date"].iloc[-1].date()))
+
+    with q_col3:
+        st.metric("أدنى سعر", f"{df['Close'].min():.2f}")
+
+    with q_col4:
+        st.metric("أعلى سعر", f"{df['Close'].max():.2f}")
+
+    missing_values = int(df[["Open", "High", "Low", "Close", "Volume"]].isna().sum().sum())
+
+    if missing_values > 0:
+        st.error(f"يوجد {missing_values} قيمة ناقصة في البيانات.")
     else:
-        st.warning("الاستراتيجية لم تتفوق على Buy & Hold في هذا الاختبار الأولي.")
+        st.success("البيانات لا تحتوي على قيم ناقصة في الأعمدة الأساسية.")
 
-with st.expander("عرض آخر 20 صفقة"):
-    if trades_df.empty:
-        st.write("لا توجد صفقات.")
-    else:
-        display_trades = trades_df.copy()
-        display_trades["entry_date"] = display_trades["entry_date"].astype(str)
-        display_trades["exit_date"] = display_trades["exit_date"].astype(str)
-        st.dataframe(display_trades.tail(20), use_container_width=True)
-        
-fig = go.Figure()
+    with st.expander("عرض آخر 5 أسعار"):
+        st.dataframe(
+            df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(5),
+            use_container_width=True
+        )
 
-fig.add_trace(
-    go.Candlestick(
-        x=df["Date"],
-        open=df["Open"],
-        high=df["High"],
-        low=df["Low"],
-        close=df["Close"],
-        name=symbol
+    st.divider()
+
+    st.subheader("Backtest Engine Test v1")
+
+    st.error(
+        """
+        هذا الاختبار لا يقيس الاستراتيجية الفراكتلية ولا القرار البنيوي.
+        هو فقط اختبار تقني للتأكد أن محرك الـ Backtesting يعمل.
+        لا تستخدم نتائجه كدليل على قوة Fractal Edge Lab.
+        """
     )
-)
 
-fig.add_trace(
-    go.Scatter(
-        x=df["Date"],
-        y=df["ma20"],
-        mode="lines",
-        name="MA 20"
+    st.write(
+        """
+        القاعدة الحالية كلاسيكية ومؤقتة:
+        - تظهر الإشارة عندما يكون السعر فوق MA20 و MA50 و MA200.
+        - الدخول يتم في افتتاح اليوم التالي.
+        - هذه القاعدة لا تختبر Fractal Structure ولا Cycle Quality.
+        - الهدف فقط اختبار الحسابات، الدخول، الخروج، والتكاليف.
+        """
     )
-)
 
-fig.add_trace(
-    go.Scatter(
-        x=df["Date"],
-        y=df["ma50"],
-        mode="lines",
-        name="MA 50"
+    bt_col_settings_1, bt_col_settings_2 = st.columns(2)
+
+    with bt_col_settings_1:
+        hold_days = st.slider(
+            "مدة الاحتفاظ بالصفقة",
+            min_value=5,
+            max_value=60,
+            value=20,
+            step=5
+        )
+
+    with bt_col_settings_2:
+        cost_pct = st.number_input(
+            "تكلفة الصفقة الإجمالية % تقريبية",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.20,
+            step=0.05
+        )
+
+    clean_df = df.dropna().reset_index(drop=True)
+    train_df, test_df = split_train_test(clean_df, train_ratio=train_ratio)
+
+    all_trades, all_stats = run_backtest_v1(
+        clean_df,
+        hold_days=hold_days,
+        cost_pct=cost_pct,
+        start_index=200
     )
-)
 
-fig.add_trace(
-    go.Scatter(
-        x=df["Date"],
-        y=df["ma200"],
-        mode="lines",
-        name="MA 200"
+    train_trades, train_stats = run_backtest_v1(
+        train_df,
+        hold_days=hold_days,
+        cost_pct=cost_pct,
+        start_index=200
     )
-)
 
-swing_highs = df[df["swing_high"]]
-swing_lows = df[df["swing_low"]]
-
-fig.add_trace(
-    go.Scatter(
-        x=swing_highs["Date"],
-        y=swing_highs["High"],
-        mode="markers",
-        name="Fractal High",
-        marker=dict(symbol="triangle-down", size=10)
+    test_start_index = min(20, max(len(test_df) // 5, 1))
+    test_trades, test_stats = run_backtest_v1(
+        test_df,
+        hold_days=hold_days,
+        cost_pct=cost_pct,
+        start_index=test_start_index
     )
-)
 
-fig.add_trace(
-    go.Scatter(
-        x=swing_lows["Date"],
-        y=swing_lows["Low"],
-        mode="markers",
-        name="Fractal Low",
-        marker=dict(symbol="triangle-up", size=10)
+    st.info(
+        """
+        يتم عرض النتائج على كامل البيانات، ثم على أول جزء من البيانات، ثم على آخر جزء Out-of-sample.
+        لا يتم اعتبار أي نتيجة قوية ما لم تصمد في الجزء الأخير خارج العينة.
+        """
     )
-)
 
-fig.update_layout(
-    height=650,
-    xaxis_rangeslider_visible=False,
-    template="plotly_white"
-)
+    bt_tab_all, bt_tab_train, bt_tab_test = st.tabs(
+        ["كامل البيانات", "أول 70% تقريبًا", "آخر 30% Out-of-sample"]
+    )
 
-st.plotly_chart(fig, use_container_width=True)
+    with bt_tab_all:
+        display_backtest_stats("كامل البيانات", all_stats)
 
-st.divider()
+    with bt_tab_train:
+        display_backtest_stats("أول جزء من البيانات", train_stats)
 
-st.subheader("Market Structure v1")
+    with bt_tab_test:
+        display_backtest_stats("آخر جزء Out-of-sample", test_stats)
 
-st.write(
-    """
-    هذه النسخة تضيف أول طبقة تحليل بنيوي بسيطة:
-    - المتوسطات المتحركة 20 / 50 / 200
-    - ATR كنسبة من السعر
-    - قمة وقاع آخر 20 شمعة
-    - ضغط التذبذب
-    - تصنيف أولي لحالة السهم
-    """
-)
+    st.warning("مقارنة Buy & Hold ليست حكمًا نهائيًا، لأن التعرض للسوق والمخاطرة مختلفان.")
 
-st.subheader("قراءة أولية")
-
-if suggested_action == "Watch":
-    st.success("السهم يستحق المراقبة، لكن لا يوجد دخول تلقائي بدون شرط واضح.")
-elif suggested_action == "Watch for Breakout":
-    st.info("يوجد ضغط تذبذب محتمل. الأفضل مراقبة اختراق واضح قبل أي قرار.")
-elif suggested_action == "Avoid":
-    st.error("الحالة الحالية غير مناسبة للدخول الطويل حسب القواعد البسيطة.")
-else:
-    st.warning("لا توجد أفضلية واضحة حاليًا. الأفضل الانتظار.")
-
-with st.expander("عرض آخر 10 صفوف من البيانات المحسوبة"):
-    st.dataframe(df.tail(10), use_container_width=True)
+    with st.expander("عرض آخر 20 صفقة من كامل البيانات"):
+        if all_trades.empty:
+            st.write("لا توجد صفقات.")
+        else:
+            display_trades = all_trades.copy()
+            display_trades["entry_date"] = display_trades["entry_date"].astype(str)
+            display_trades["exit_date"] = display_trades["exit_date"].astype(str)
+            st.dataframe(display_trades.tail(20), use_container_width=True)
