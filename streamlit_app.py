@@ -1141,37 +1141,37 @@ with tab_tests:
             value=0.20,
             step=0.05
         )
-            st.divider()
+                st.divider()
 
-    st.subheader("Fractal Decision Backtest v1")
+        st.subheader("Fractal Decision Backtest v1")
 
-    st.write(
-        """
-        هذا أول اختبار بنيوي حقيقي مرتبط بفكرة المشروع.
+        st.write(
+            """
+            هذا أول اختبار بنيوي حقيقي مرتبط بفكرة المشروع.
 
-        القاعدة:
-        - البنية صاعدة.
-        - جودة الدورة قوية أو متوسطة.
-        - السعر في أول جزء من الدورة.
-        - لا يتم استخدام القمم والقيعان إلا بعد تأكيدها زمنيًا.
-        """
-    )
-
-    fd_col1, fd_col2 = st.columns(2)
-
-    with fd_col1:
-        max_cycle_position = st.slider(
-            "أقصى موقع مسموح داخل الدورة للدخول %",
-            min_value=10.0,
-            max_value=60.0,
-            value=35.0,
-            step=5.0
+            القاعدة:
+            - البنية صاعدة.
+            - جودة الدورة قوية أو متوسطة.
+            - السعر في أول جزء من الدورة.
+            - لا يتم استخدام القمم والقيعان إلا بعد تأكيدها زمنيًا.
+            """
         )
 
-    with fd_col2:
-        st.info(
-            f"سيتم تأخير القمم والقيعان {pivot_window} شموع لمنع تسريب المستقبل."
-        )
+        fd_col1, fd_col2 = st.columns(2)
+
+        with fd_col1:
+            max_cycle_position = st.slider(
+                "أقصى موقع مسموح داخل الدورة للدخول %",
+                min_value=10.0,
+                max_value=60.0,
+                value=35.0,
+                step=5.0
+            )
+
+        with fd_col2:
+            st.info(
+                f"سيتم تأخير القمم والقيعان {pivot_window} شموع لمنع تسريب المستقبل."
+            )
 
     clean_df = df.dropna().reset_index(drop=True)
     train_df, test_df = split_train_test(clean_df, train_ratio=train_ratio)
