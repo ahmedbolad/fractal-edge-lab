@@ -34,7 +34,7 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
         symbol,
         period=period,
         interval=interval,
-        auto_adjust=False,
+        auto_adjust=True,
         progress=False
     )
 
