@@ -167,6 +167,34 @@ with col7:
 with col8:
     st.metric("البعد عن قاع 20", f"{latest['distance_from_low_20_pct']:.2f}%")
 
+    st.divider()
+
+st.subheader("فحص جودة البيانات")
+
+quality_col1, quality_col2, quality_col3, quality_col4 = st.columns(4)
+
+with quality_col1:
+    st.metric("أول تاريخ", str(df["Date"].iloc[0].date()))
+
+with quality_col2:
+    st.metric("آخر تاريخ", str(df["Date"].iloc[-1].date()))
+
+with quality_col3:
+    st.metric("أدنى سعر", f"{df['Close'].min():.2f}")
+
+with quality_col4:
+    st.metric("أعلى سعر", f"{df['Close'].max():.2f}")
+
+missing_values = int(df[["Open", "High", "Low", "Close", "Volume"]].isna().sum().sum())
+
+if missing_values > 0:
+    st.error(f"يوجد {missing_values} قيمة ناقصة في البيانات.")
+else:
+    st.success("البيانات لا تحتوي على قيم ناقصة في الأعمدة الأساسية.")
+
+with st.expander("عرض آخر 5 أسعار إغلاق"):
+    st.dataframe(df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(5), use_container_width=True)
+
 fig = go.Figure()
 
 fig.add_trace(
