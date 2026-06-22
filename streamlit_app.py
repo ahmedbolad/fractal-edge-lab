@@ -505,6 +505,250 @@ def summarize_trades(
         "time_in_market": time_in_market,
     }
 
+def analyze_structure_from_swings(
+    df: pd.DataFrame,
+    swings: list[dict],
+    current_index: int
+) -> dict:
+    """
+    يحلل البنية عند لحظة تاريخية محددة باستخدام swings مؤكدة فقط حتى تلك اللحظة.
+    هذا مهم لمنع تسريب بيانات المستقبل في Backtest بنيوي.
+    """
+
+    if len(swings) < 4:
+        return {
+            "structure_trend": "غير كافٍ",
+            "last_swing": "غير متاح",
+            "price_position": np.nan,
+            "swings_count": len(swings),
+        }
+
+    highs = [s for s in swings if s["type"] == "high"]
+    lows = [s for s in swings if s["type"] == "low"]
+
+    if len(highs) >= 2 and len(lows) >= 2:
+        last_high = highs[-1]
+        prev_high = highs[-2]
+        last_low = lows[-1]
+        prev_low = lows[-2]
+
+        higher_high = last_high["price"] > prev_high["price"]
+        higher_low = last_low["price"] > prev_low["price"]
+        lower_high = last_high["price"] < prev_high["price"]
+        lower_low = last_low["price"] < prev_low["price"]
+
+        if higher_high and higher_low:
+            structure_trend = "بنية صاعدة"
+        elif lower_high and lower_low:
+            structure_trend = "بنية هابطة"
+        else:
+            structure_trend = "بنية مختلطة"
+    else:
+        structure_trend = "غير كافٍ"
+
+    current_close = float(df["Close"].iloc[current_index])
+    recent_swings = swings[-4:]
+    recent_prices = [s["price"] for s in recent_swings]
+    recent_min = min(recent_prices)
+    recent_max = max(recent_prices)
+
+    if recent_max > recent_min:
+        price_position = (current_close - recent_min) / (recent_max - recent_min) * 100
+        price_position = max(0, min(100, price_position))
+    else:
+        price_position = np.nan
+
+    last_swing = swings[-1]
+
+    return {
+        "structure_trend": structure_trend,
+        "last_swing": "قمة" if last_swing["type"] == "high" else "قاع",
+        "price_position": price_position,
+        "swings_count": len(swings),
+    }
+
+
+def compute_cycle_quality_at_index(
+    df: pd.DataFrame,
+    swings: list[dict],
+    current_index: int
+) -> dict:
+    """
+    يحسب جودة الدورة عند لحظة تاريخية محددة بدون استخدام المستقبل.
+    """
+
+    if len(swings) < 2:
+        return {
+            "cycle_direction": "غير كافٍ",
+            "cycle_move_pct": np.nan,
+            "cycle_move_atr": np.nan,
+            "cycle_position": np.nan,
+            "swing_density": np.nan,
+            "cycle_quality": "غير كافٍ",
+        }
+
+    previous_swing = swings[-2]
+    last_swing = swings[-1]
+
+    previous_price = float(previous_swing["price"])
+    last_price = float(last_swing["price"])
+    current_close = float(df["Close"].iloc[current_index])
+
+    move_abs = abs(last_price - previous_price)
+    move_pct = (move_abs / previous_price) * 100 if previous_price != 0 else np.nan
+
+    atr_value = df.loc[last_swing["index"], "atr14"]
+
+    if pd.isna(atr_value) or atr_value == 0:
+        atr_values = df["atr14"].iloc[:current_index + 1].dropna()
+        atr_value = atr_values.iloc[-1] if len(atr_values) else np.nan
+
+    move_atr = move_abs / atr_value if not pd.isna(atr_value) and atr_value > 0 else np.nan
+
+    low_bound = min(previous_price, last_price)
+    high_bound = max(previous_price, last_price)
+
+    if high_bound > low_bound:
+        cycle_position = (current_close - low_bound) / (high_bound - low_bound) * 100
+        cycle_position = max(0, min(100, cycle_position))
+    else:
+        cycle_position = np.nan
+
+    if previous_swing["type"] == "low" and last_swing["type"] == "high":
+        cycle_direction = "دورة صاعدة"
+    elif previous_swing["type"] == "high" and last_swing["type"] == "low":
+        cycle_direction = "دورة هابطة"
+    else:
+        cycle_direction = "دورة غير واضحة"
+
+    visible_bars = max(current_index + 1, 1)
+    swing_density = len(swings) / visible_bars * 100
+
+    if pd.isna(move_atr):
+        cycle_quality = "غير كافٍ"
+    elif swing_density > 20:
+        cycle_quality = "ضجيج مرتفع"
+    elif move_atr >= 5:
+        cycle_quality = "قوية"
+    elif move_atr >= 3:
+        cycle_quality = "متوسطة"
+    elif move_atr >= 1.5:
+        cycle_quality = "ضعيفة"
+    else:
+        cycle_quality = "ضجيج"
+
+    return {
+        "cycle_direction": cycle_direction,
+        "cycle_move_pct": move_pct,
+        "cycle_move_atr": move_atr,
+        "cycle_position": cycle_position,
+        "swing_density": swing_density,
+        "cycle_quality": cycle_quality,
+    }
+
+
+def run_fractal_decision_backtest_v1(
+    df: pd.DataFrame,
+    hold_days: int = 20,
+    cost_pct: float = 0.20,
+    min_swing_atr: float = 1.5,
+    confirmation_delay: int = 3,
+    max_cycle_position: float = 35.0,
+    start_index: int = 200
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Fractal Decision Backtest v1:
+    يختبر قرارًا بنيويًا أوليًا بدون استخدام swings غير مؤكدة.
+
+    القاعدة:
+    - لا نستخدم القمة/القاع إلا بعد confirmed_index.
+    - البنية يجب أن تكون صاعدة.
+    - جودة الدورة قوية أو متوسطة.
+    - موقع السعر داخل الدورة <= max_cycle_position.
+    - الدخول في افتتاح اليوم التالي.
+    - الخروج بعد hold_days.
+    """
+
+    raw_swings = build_swing_sequence(df, confirmation_delay=confirmation_delay)
+
+    trades = []
+    i = start_index
+
+    while i < len(df) - hold_days - 1:
+        confirmed_swings = [
+            swing for swing in raw_swings
+            if swing["confirmed_index"] <= i
+        ]
+
+        filtered_swings = filter_swings_by_atr(
+            confirmed_swings,
+            df,
+            min_atr_multiple=min_swing_atr
+        )
+
+        structure_state = analyze_structure_from_swings(
+            df,
+            filtered_swings,
+            current_index=i
+        )
+
+        cycle_state = compute_cycle_quality_at_index(
+            df,
+            filtered_swings,
+            current_index=i
+        )
+
+        signal = (
+            structure_state["structure_trend"] == "بنية صاعدة"
+            and cycle_state["cycle_quality"] in ["قوية", "متوسطة"]
+            and not pd.isna(cycle_state["cycle_position"])
+            and cycle_state["cycle_position"] <= max_cycle_position
+        )
+
+        if signal:
+            entry_index = i + 1
+            exit_index = entry_index + hold_days
+
+            entry_date = df.iloc[entry_index]["Date"]
+            exit_date = df.iloc[exit_index]["Date"]
+
+            entry_price = float(df.iloc[entry_index]["Open"])
+            exit_price = float(df.iloc[exit_index]["Close"])
+
+            gross_return_pct = (exit_price / entry_price - 1) * 100
+            net_return_pct = gross_return_pct - cost_pct
+
+            trades.append(
+                {
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "gross_return_pct": gross_return_pct,
+                    "net_return_pct": net_return_pct,
+                    "hold_days": hold_days,
+                    "structure_trend": structure_state["structure_trend"],
+                    "cycle_quality": cycle_state["cycle_quality"],
+                    "cycle_position": cycle_state["cycle_position"],
+                    "cycle_move_atr": cycle_state["cycle_move_atr"],
+                    "swings_count": structure_state["swings_count"],
+                }
+            )
+
+            i = exit_index + 1
+        else:
+            i += 1
+
+    trades_df = pd.DataFrame(trades)
+
+    stats = summarize_trades(
+        trades_df=trades_df,
+        df=df,
+        hold_days=hold_days,
+        start_index=start_index
+    )
+
+    return trades_df, stats
 
 def run_backtest_v1(
     df: pd.DataFrame,
@@ -897,6 +1141,37 @@ with tab_tests:
             value=0.20,
             step=0.05
         )
+            st.divider()
+
+    st.subheader("Fractal Decision Backtest v1")
+
+    st.write(
+        """
+        هذا أول اختبار بنيوي حقيقي مرتبط بفكرة المشروع.
+
+        القاعدة:
+        - البنية صاعدة.
+        - جودة الدورة قوية أو متوسطة.
+        - السعر في أول جزء من الدورة.
+        - لا يتم استخدام القمم والقيعان إلا بعد تأكيدها زمنيًا.
+        """
+    )
+
+    fd_col1, fd_col2 = st.columns(2)
+
+    with fd_col1:
+        max_cycle_position = st.slider(
+            "أقصى موقع مسموح داخل الدورة للدخول %",
+            min_value=10.0,
+            max_value=60.0,
+            value=35.0,
+            step=5.0
+        )
+
+    with fd_col2:
+        st.info(
+            f"سيتم تأخير القمم والقيعان {pivot_window} شموع لمنع تسريب المستقبل."
+        )
 
     clean_df = df.dropna().reset_index(drop=True)
     train_df, test_df = split_train_test(clean_df, train_ratio=train_ratio)
@@ -923,6 +1198,36 @@ with tab_tests:
         start_index=test_start_index
     )
 
+    fractal_all_trades, fractal_all_stats = run_fractal_decision_backtest_v1(
+    clean_df,
+    hold_days=hold_days,
+    cost_pct=cost_pct,
+    min_swing_atr=min_swing_atr,
+    confirmation_delay=pivot_window,
+    max_cycle_position=max_cycle_position,
+    start_index=200
+)
+
+fractal_train_trades, fractal_train_stats = run_fractal_decision_backtest_v1(
+    train_df,
+    hold_days=hold_days,
+    cost_pct=cost_pct,
+    min_swing_atr=min_swing_atr,
+    confirmation_delay=pivot_window,
+    max_cycle_position=max_cycle_position,
+    start_index=200
+)
+
+fractal_test_trades, fractal_test_stats = run_fractal_decision_backtest_v1(
+    test_df,
+    hold_days=hold_days,
+    cost_pct=cost_pct,
+    min_swing_atr=min_swing_atr,
+    confirmation_delay=pivot_window,
+    max_cycle_position=max_cycle_position,
+    start_index=test_start_index
+)
+
     st.info(
         """
         يتم عرض النتائج على كامل البيانات، ثم على أول جزء من البيانات، ثم على آخر جزء Out-of-sample.
@@ -944,6 +1249,39 @@ with tab_tests:
         display_backtest_stats("آخر جزء Out-of-sample", test_stats)
 
     st.warning("مقارنة Buy & Hold ليست حكمًا نهائيًا، لأن التعرض للسوق والمخاطرة مختلفان.")
+
+    st.divider()
+
+    st.subheader("نتائج Fractal Decision Backtest v1")
+
+    st.success(
+        """
+        هذا الاختبار أقرب لفكرة المشروع، لأنه يستخدم البنية والدورة مع تأخير تأكيد القمم والقيعان.
+        مع ذلك، لا نعتبره دليلاً نهائيًا إلا إذا صمد على آخر 30% Out-of-sample وبعدد صفقات كافٍ.
+        """
+    )
+
+    fd_tab_all, fd_tab_train, fd_tab_test = st.tabs(
+        ["Fractal - كامل البيانات", "Fractal - أول 70%", "Fractal - آخر 30%"]
+    )
+
+    with fd_tab_all:
+        display_backtest_stats("Fractal Decision - كامل البيانات", fractal_all_stats)
+
+    with fd_tab_train:
+        display_backtest_stats("Fractal Decision - أول جزء", fractal_train_stats)
+
+    with fd_tab_test:
+        display_backtest_stats("Fractal Decision - Out-of-sample", fractal_test_stats)
+
+    with st.expander("عرض آخر 20 صفقة Fractal Decision"):
+        if fractal_all_trades.empty:
+            st.write("لا توجد صفقات.")
+        else:
+            display_fractal_trades = fractal_all_trades.copy()
+            display_fractal_trades["entry_date"] = display_fractal_trades["entry_date"].astype(str)
+            display_fractal_trades["exit_date"] = display_fractal_trades["exit_date"].astype(str)
+            st.dataframe(display_fractal_trades.tail(20), use_container_width=True)
 
     with st.expander("عرض آخر 20 صفقة من كامل البيانات"):
         if all_trades.empty:
