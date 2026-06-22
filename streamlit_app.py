@@ -253,7 +253,7 @@ def filter_swings_by_atr(swings: list[dict], df: pd.DataFrame, min_atr_multiple:
 
 def analyze_fractal_structure(df: pd.DataFrame, min_swing_atr: float = 1.5) -> tuple[dict, list[dict]]:
     raw_swings = build_swing_sequence(df)
-swings = filter_swings_by_atr(raw_swings, df, min_atr_multiple=min_swing_atr)
+    swings = filter_swings_by_atr(raw_swings, df, min_atr_multiple=min_swing_atr)
 
     if len(swings) < 4:
         return {
