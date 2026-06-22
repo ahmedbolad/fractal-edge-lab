@@ -315,6 +315,96 @@ def analyze_fractal_structure(df: pd.DataFrame, min_swing_atr: float = 1.5) -> t
         "swings_count": len(swings),
     }, swings
 
+def compute_cycle_quality(df: pd.DataFrame, swings: list[dict]) -> dict:
+    """
+    Cycle Quality Score v1:
+    يقيس جودة آخر دورة سعرية مؤكدة بناءً على:
+    - حجم الحركة بين آخر نقطتين بنيويتين
+    - حجم الحركة مقارنة بـ ATR
+    - موقع السعر الحالي داخل آخر دورة
+    - كثافة القمم والقيعان كمؤشر ضجيج
+    """
+
+    if len(swings) < 2:
+        return {
+            "cycle_direction": "غير كافٍ",
+            "cycle_move_pct": np.nan,
+            "cycle_move_atr": np.nan,
+            "cycle_position": np.nan,
+            "swing_density": np.nan,
+            "cycle_quality": "غير كافٍ",
+            "cycle_reading": "لا توجد دورة مؤكدة كافية."
+        }
+
+    previous_swing = swings[-2]
+    last_swing = swings[-1]
+
+    previous_price = float(previous_swing["price"])
+    last_price = float(last_swing["price"])
+    current_close = float(df["Close"].iloc[-1])
+
+    move_abs = abs(last_price - previous_price)
+    move_pct = (move_abs / previous_price) * 100 if previous_price != 0 else np.nan
+
+    atr_value = df.loc[last_swing["index"], "atr14"]
+
+    if pd.isna(atr_value) or atr_value == 0:
+        atr_value = df["atr14"].dropna().iloc[-1]
+
+    move_atr = move_abs / atr_value if atr_value and atr_value > 0 else np.nan
+
+    low_bound = min(previous_price, last_price)
+    high_bound = max(previous_price, last_price)
+
+    if high_bound > low_bound:
+        cycle_position = (current_close - low_bound) / (high_bound - low_bound) * 100
+        cycle_position = max(0, min(100, cycle_position))
+    else:
+        cycle_position = np.nan
+
+    swing_density = len(swings) / len(df) * 100
+
+    if previous_swing["type"] == "low" and last_swing["type"] == "high":
+        cycle_direction = "دورة صاعدة"
+    elif previous_swing["type"] == "high" and last_swing["type"] == "low":
+        cycle_direction = "دورة هابطة"
+    else:
+        cycle_direction = "دورة غير واضحة"
+
+    if pd.isna(move_atr):
+        cycle_quality = "غير كافٍ"
+    elif swing_density > 20:
+        cycle_quality = "ضجيج مرتفع"
+    elif move_atr >= 5:
+        cycle_quality = "قوية"
+    elif move_atr >= 3:
+        cycle_quality = "متوسطة"
+    elif move_atr >= 1.5:
+        cycle_quality = "ضعيفة"
+    else:
+        cycle_quality = "ضجيج"
+
+    if cycle_quality == "قوية":
+        cycle_reading = "آخر دورة كبيرة كفاية مقارنة بالتذبذب، ويمكن اعتبارها بنية مهمة."
+    elif cycle_quality == "متوسطة":
+        cycle_reading = "آخر دورة مقبولة، لكنها تحتاج تأكيد من الفريم الأكبر أو من اختبار تاريخي."
+    elif cycle_quality == "ضعيفة":
+        cycle_reading = "آخر دورة موجودة لكنها ليست قوية كفاية؛ الحذر أفضل."
+    elif cycle_quality == "ضجيج مرتفع":
+        cycle_reading = "عدد القمم والقيعان مرتفع؛ القراءة البنيوية قد تكون ملوثة بالضجيج."
+    else:
+        cycle_reading = "الحركة الأخيرة أقرب إلى ضجيج أو غير كافية كبنية."
+
+    return {
+        "cycle_direction": cycle_direction,
+        "cycle_move_pct": move_pct,
+        "cycle_move_atr": move_atr,
+        "cycle_position": cycle_position,
+        "swing_density": swing_density,
+        "cycle_quality": cycle_quality,
+        "cycle_reading": cycle_reading
+    }
+
 def run_backtest_v1(df: pd.DataFrame, hold_days: int = 20, cost_pct: float = 0.20) -> tuple[pd.DataFrame, dict]:
     """
     Backtest v1:
@@ -418,6 +508,7 @@ if data.empty:
 df = add_market_features(data)
 df = detect_fractal_swings(df, left=pivot_window, right=pivot_window)
 fractal_summary, swing_sequence = analyze_fractal_structure(df, min_swing_atr=min_swing_atr)
+cycle_quality = compute_cycle_quality(df, swing_sequence)
 
 latest = df.dropna().iloc[-1]
 
@@ -545,6 +636,60 @@ with st.expander("عرض آخر 12 نقطة Fractal Swing"):
         swings_df = pd.DataFrame(swing_sequence).tail(12)
         swings_df["date"] = swings_df["date"].astype(str)
         st.dataframe(swings_df, use_container_width=True)
+
+st.divider()
+
+st.subheader("Cycle Quality Score v1")
+
+st.write(
+    """
+    هذه الطبقة تقيس جودة آخر دورة سعرية مؤكدة.  
+    الهدف ليس إعطاء توصية، بل فصل البنية المهمة عن الضجيج.
+    """
+)
+
+cq_col1, cq_col2, cq_col3, cq_col4 = st.columns(4)
+
+with cq_col1:
+    st.metric("اتجاه آخر دورة", cycle_quality["cycle_direction"])
+
+with cq_col2:
+    if pd.isna(cycle_quality["cycle_move_pct"]):
+        st.metric("حجم الدورة %", "غير متاح")
+    else:
+        st.metric("حجم الدورة %", f"{cycle_quality['cycle_move_pct']:.2f}%")
+
+with cq_col3:
+    if pd.isna(cycle_quality["cycle_move_atr"]):
+        st.metric("حجم الدورة بـ ATR", "غير متاح")
+    else:
+        st.metric("حجم الدورة بـ ATR", f"{cycle_quality['cycle_move_atr']:.2f}x")
+
+with cq_col4:
+    st.metric("جودة الدورة", cycle_quality["cycle_quality"])
+
+cq_col5, cq_col6 = st.columns(2)
+
+with cq_col5:
+    if pd.isna(cycle_quality["cycle_position"]):
+        st.metric("موقع السعر داخل الدورة", "غير متاح")
+    else:
+        st.metric("موقع السعر داخل الدورة", f"{cycle_quality['cycle_position']:.2f}%")
+
+with cq_col6:
+    if pd.isna(cycle_quality["swing_density"]):
+        st.metric("كثافة القمم والقيعان", "غير متاح")
+    else:
+        st.metric("كثافة القمم والقيعان", f"{cycle_quality['swing_density']:.2f}%")
+
+if cycle_quality["cycle_quality"] == "قوية":
+    st.success(cycle_quality["cycle_reading"])
+elif cycle_quality["cycle_quality"] == "متوسطة":
+    st.info(cycle_quality["cycle_reading"])
+elif cycle_quality["cycle_quality"] == "ضعيفة":
+    st.warning(cycle_quality["cycle_reading"])
+else:
+    st.error(cycle_quality["cycle_reading"])
 
 st.subheader("Backtest v1")
 
