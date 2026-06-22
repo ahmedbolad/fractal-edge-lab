@@ -121,6 +121,99 @@ def classify_market_state(row: pd.Series) -> tuple[str, str]:
 
     return state, action
 
+def run_backtest_v1(df: pd.DataFrame, hold_days: int = 20, cost_pct: float = 0.20) -> tuple[pd.DataFrame, dict]:
+    """
+    Backtest v1:
+    - الإشارة تظهر عند إغلاق اليوم إذا كان:
+      Close > MA20 > MA50 > MA200
+    - الدخول يكون في افتتاح اليوم التالي حتى نتجنب تسريب المستقبل.
+    - الخروج بعد عدد أيام محدد.
+    - cost_pct تمثل تكلفة إجمالية تقريبية للصفقة: دخول + خروج.
+    """
+
+    trades = []
+    i = 200
+
+    while i < len(df) - hold_days - 1:
+        row = df.iloc[i]
+
+        signal = (
+            row["Close"] > row["ma20"]
+            and row["ma20"] > row["ma50"]
+            and row["ma50"] > row["ma200"]
+        )
+
+        if signal:
+            entry_index = i + 1
+            exit_index = entry_index + hold_days
+
+            entry_date = df.iloc[entry_index]["Date"]
+            exit_date = df.iloc[exit_index]["Date"]
+
+            entry_price = float(df.iloc[entry_index]["Open"])
+            exit_price = float(df.iloc[exit_index]["Close"])
+
+            gross_return_pct = (exit_price / entry_price - 1) * 100
+            net_return_pct = gross_return_pct - cost_pct
+
+            trades.append(
+                {
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "gross_return_pct": gross_return_pct,
+                    "net_return_pct": net_return_pct,
+                    "hold_days": hold_days,
+                }
+            )
+
+            # منع تداخل الصفقات
+            i = exit_index + 1
+        else:
+            i += 1
+
+    trades_df = pd.DataFrame(trades)
+
+    if trades_df.empty:
+        stats = {
+            "trades": 0,
+            "win_rate": 0.0,
+            "avg_return": 0.0,
+            "best_trade": 0.0,
+            "worst_trade": 0.0,
+            "profit_factor": 0.0,
+            "strategy_total_return": 0.0,
+            "buy_hold_return": 0.0,
+        }
+        return trades_df, stats
+
+    wins = trades_df[trades_df["net_return_pct"] > 0]
+    losses = trades_df[trades_df["net_return_pct"] <= 0]
+
+    total_profit = wins["net_return_pct"].sum()
+    total_loss = abs(losses["net_return_pct"].sum())
+
+    if total_loss == 0:
+        profit_factor = float("inf")
+    else:
+        profit_factor = total_profit / total_loss
+
+    strategy_total_return = ((1 + trades_df["net_return_pct"] / 100).prod() - 1) * 100
+    buy_hold_return = (df["Close"].iloc[-1] / df["Close"].iloc[200] - 1) * 100
+
+    stats = {
+        "trades": len(trades_df),
+        "win_rate": len(wins) / len(trades_df) * 100,
+        "avg_return": trades_df["net_return_pct"].mean(),
+        "best_trade": trades_df["net_return_pct"].max(),
+        "worst_trade": trades_df["net_return_pct"].min(),
+        "profit_factor": profit_factor,
+        "strategy_total_return": strategy_total_return,
+        "buy_hold_return": buy_hold_return,
+    }
+
+    return trades_df, stats
 
 data = load_data(symbol, period, interval)
 
@@ -195,6 +288,87 @@ else:
 with st.expander("عرض آخر 5 أسعار إغلاق"):
     st.dataframe(df[["Date", "Open", "High", "Low", "Close", "Volume"]].tail(5), use_container_width=True)
 
+st.divider()
+
+st.subheader("Backtest v1")
+
+st.write(
+    """
+    هذا اختبار تاريخي أولي وبسيط جدًا.
+
+    القاعدة:
+    - تظهر الإشارة عندما يكون السعر فوق MA20 و MA50 و MA200.
+    - الدخول يتم في افتتاح اليوم التالي.
+    - الخروج بعد عدد أيام محدد.
+    - يتم منع تداخل الصفقات.
+    - يتم خصم تكلفة تقديرية للصفقة.
+    """
+)
+
+bt_col_settings_1, bt_col_settings_2 = st.columns(2)
+
+with bt_col_settings_1:
+    hold_days = st.slider("مدة الاحتفاظ بالصفقة", min_value=5, max_value=60, value=20, step=5)
+
+with bt_col_settings_2:
+    cost_pct = st.number_input(
+        "تكلفة الصفقة الإجمالية % تقريبية",
+        min_value=0.0,
+        max_value=5.0,
+        value=0.20,
+        step=0.05
+    )
+
+trades_df, bt_stats = run_backtest_v1(df.dropna().reset_index(drop=True), hold_days=hold_days, cost_pct=cost_pct)
+
+bt_col1, bt_col2, bt_col3, bt_col4 = st.columns(4)
+
+with bt_col1:
+    st.metric("عدد الصفقات", f"{bt_stats['trades']}")
+
+with bt_col2:
+    st.metric("نسبة النجاح", f"{bt_stats['win_rate']:.2f}%")
+
+with bt_col3:
+    st.metric("متوسط عائد الصفقة", f"{bt_stats['avg_return']:.2f}%")
+
+with bt_col4:
+    if bt_stats["profit_factor"] == float("inf"):
+        st.metric("Profit Factor", "∞")
+    else:
+        st.metric("Profit Factor", f"{bt_stats['profit_factor']:.2f}")
+
+bt_col5, bt_col6, bt_col7, bt_col8 = st.columns(4)
+
+with bt_col5:
+    st.metric("أفضل صفقة", f"{bt_stats['best_trade']:.2f}%")
+
+with bt_col6:
+    st.metric("أسوأ صفقة", f"{bt_stats['worst_trade']:.2f}%")
+
+with bt_col7:
+    st.metric("عائد الاستراتيجية المركب", f"{bt_stats['strategy_total_return']:.2f}%")
+
+with bt_col8:
+    st.metric("Buy & Hold", f"{bt_stats['buy_hold_return']:.2f}%")
+
+if bt_stats["trades"] == 0:
+    st.warning("لا توجد صفقات كافية حسب القاعدة الحالية.")
+else:
+    if bt_stats["strategy_total_return"] > bt_stats["buy_hold_return"]:
+        st.success("الاستراتيجية تفوقت على Buy & Hold في هذا الاختبار الأولي.")
+    else:
+        st.warning("الاستراتيجية لم تتفوق على Buy & Hold في هذا الاختبار الأولي.")
+
+with st.expander("عرض آخر 20 صفقة"):
+    if trades_df.empty:
+        st.write("لا توجد صفقات.")
+    else:
+        display_trades = trades_df.copy()
+        display_trades["entry_date"] = display_trades["entry_date"].astype(str)
+        display_trades["exit_date"] = display_trades["exit_date"].astype(str)
+        st.dataframe(display_trades.tail(20), use_container_width=True)
+        
 fig = go.Figure()
 
 fig.add_trace(
