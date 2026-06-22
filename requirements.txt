@@ -5,4 +5,3 @@ plotly
 numpy
 scipy
 scikit-learn
-lightgbm
