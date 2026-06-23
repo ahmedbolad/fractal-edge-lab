@@ -23,7 +23,17 @@ DEFAULT_SYMBOLS = [
 with st.sidebar:
     st.header("الإعدادات")
 
-    symbol = st.selectbox("اختر السهم", DEFAULT_SYMBOLS, index=7)
+    symbol_input = st.text_input(
+    "اكتب رمز السهم",
+    value="AMD",
+    placeholder="مثال: AAPL أو TSLA أو NVDA"
+)
+
+symbol = symbol_input.strip().upper()
+
+if not symbol:
+    st.warning("اكتب رمز السهم أولاً.")
+    st.stop()
     period = st.selectbox("الفترة التاريخية", ["1y", "2y", "5y", "10y"], index=2)
     interval = st.selectbox("الإطار الزمني", ["1d", "1wk"], index=0)
 
