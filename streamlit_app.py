@@ -36,6 +36,8 @@ if not symbol:
     st.stop()
     period = st.selectbox("الفترة التاريخية", ["1y", "2y", "5y", "10y"], index=2)
     interval = st.selectbox("الإطار الزمني", ["1d", "1wk"], index=0)
+    period = st.selectbox("الفترة التاريخية", ["1y", "2y", "5y", "10y"], index=2)
+    interval = st.selectbox("الإطار الزمني", ["1d", "1wk"], index=0)
 
     st.divider()
 
