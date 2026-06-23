@@ -908,52 +908,48 @@ first_close = float(df["Close"].iloc[0])
 total_return = (latest_close / first_close - 1) * 100
 
 tab_summary, tab_structure, tab_chart, tab_tests = st.tabs(
-    ["القرار المختصر", "البنية والدورة", "الشارت", "الاختبارات والبيانات"]
+    ["القرار", "التفاصيل المتقدمة", "الشارت", "الاختبارات"]
 )
 
 with tab_summary:
-    st.subheader(f"ملخص شخصي: {symbol}")
+    st.subheader(f"{symbol} — القرار الشخصي")
 
-    main_col1, main_col2, main_col3 = st.columns(3)
+    decision = personal_summary["decision"]
+    reason = personal_summary["reason"]
+    waiting_for = personal_summary["waiting_for"]
 
-    with main_col1:
-        st.metric("القرار الشخصي", personal_summary["decision"])
+    if decision in ["مراقبة فرصة", "مراقبة"]:
+        st.success(f"القرار: {decision}")
+    elif decision in ["انتظار تصحيح", "انتظار"]:
+        st.warning(f"القرار: {decision}")
+    elif decision in ["تجنب", "لا تداول"]:
+        st.error(f"القرار: {decision}")
+    else:
+        st.info(f"القرار: {decision}")
 
-    with main_col2:
-        st.metric("البنية", fractal_summary["structure_trend"])
+    st.markdown("### الخلاصة")
 
-    with main_col3:
-        st.metric("جودة الدورة", cycle_quality["cycle_quality"])
+    st.write(f"**السهم:** {symbol}")
+    st.write(f"**آخر سعر:** {latest_close:.2f}")
+    st.write(f"**حالة البنية:** {fractal_summary['structure_trend']}")
+    st.write(f"**جودة الدورة:** {cycle_quality['cycle_quality']}")
+    st.write(f"**حالة السوق:** {market_state}")
 
-    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    if pd.isna(cycle_quality["cycle_position"]):
+        st.write("**موقع السعر داخل الدورة:** غير متاح")
+    else:
+        st.write(f"**موقع السعر داخل الدورة:** {cycle_quality['cycle_position']:.2f}%")
 
-    with metric_col1:
-        st.metric("آخر سعر", f"{latest_close:.2f}")
+    st.divider()
 
-    with metric_col2:
-        if pd.isna(cycle_quality["cycle_position"]):
-            st.metric("موقع السعر داخل الدورة", "غير متاح")
-        else:
-            st.metric("موقع السعر داخل الدورة", f"{cycle_quality['cycle_position']:.2f}%")
-
-    with metric_col3:
-        if pd.isna(cycle_quality["cycle_move_atr"]):
-            st.metric("حجم الدورة بـ ATR", "غير متاح")
-        else:
-            st.metric("حجم الدورة بـ ATR", f"{cycle_quality['cycle_move_atr']:.2f}x")
-
-    with metric_col4:
-        st.metric("حالة السوق", market_state)
-
-    st.info(f"السبب: {personal_summary['reason']}")
-    st.warning(f"ننتظر: {personal_summary['waiting_for']}")
+    st.info(f"**لماذا؟** {reason}")
+    st.warning(f"**ماذا أنتظر؟** {waiting_for}")
 
     st.divider()
 
     st.caption(
-        "هذا الملخص قراءة بنيوية شخصية فقط. لا يمثل إشارة دخول، ولا يعتمد على Backtest فراكتلي بعد."
+        "هذه خلاصة شخصية مبنية على قراءة البنية والدورة. التفاصيل الفنية والاختبارات موجودة في التبويبات الأخرى عند الحاجة فقط."
     )
-
 with tab_structure:
     st.subheader("Fractal Structure + Cycle Quality")
 
