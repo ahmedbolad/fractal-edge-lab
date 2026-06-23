@@ -1070,6 +1070,7 @@ with tab_chart:
 
     st.plotly_chart(fig, use_container_width=True)
 
+
 with tab_tests:
     st.subheader("فحص جودة البيانات")
 
@@ -1141,37 +1142,38 @@ with tab_tests:
             value=0.20,
             step=0.05
         )
-                st.divider()
 
-        st.subheader("Fractal Decision Backtest v1")
+    st.divider()
 
-        st.write(
-            """
-            هذا أول اختبار بنيوي حقيقي مرتبط بفكرة المشروع.
+    st.subheader("Fractal Decision Backtest v1")
 
-            القاعدة:
-            - البنية صاعدة.
-            - جودة الدورة قوية أو متوسطة.
-            - السعر في أول جزء من الدورة.
-            - لا يتم استخدام القمم والقيعان إلا بعد تأكيدها زمنيًا.
-            """
+    st.write(
+        """
+        هذا أول اختبار بنيوي حقيقي مرتبط بفكرة المشروع.
+
+        القاعدة:
+        - البنية صاعدة.
+        - جودة الدورة قوية أو متوسطة.
+        - السعر في أول جزء من الدورة.
+        - لا يتم استخدام القمم والقيعان إلا بعد تأكيدها زمنيًا.
+        """
+    )
+
+    fd_col1, fd_col2 = st.columns(2)
+
+    with fd_col1:
+        max_cycle_position = st.slider(
+            "أقصى موقع مسموح داخل الدورة للدخول %",
+            min_value=10.0,
+            max_value=60.0,
+            value=35.0,
+            step=5.0
         )
 
-        fd_col1, fd_col2 = st.columns(2)
-
-        with fd_col1:
-            max_cycle_position = st.slider(
-                "أقصى موقع مسموح داخل الدورة للدخول %",
-                min_value=10.0,
-                max_value=60.0,
-                value=35.0,
-                step=5.0
-            )
-
-        with fd_col2:
-            st.info(
-                f"سيتم تأخير القمم والقيعان {pivot_window} شموع لمنع تسريب المستقبل."
-            )
+    with fd_col2:
+        st.info(
+            f"سيتم تأخير القمم والقيعان {pivot_window} شموع لمنع تسريب المستقبل."
+        )
 
     clean_df = df.dropna().reset_index(drop=True)
     train_df, test_df = split_train_test(clean_df, train_ratio=train_ratio)
@@ -1199,34 +1201,34 @@ with tab_tests:
     )
 
     fractal_all_trades, fractal_all_stats = run_fractal_decision_backtest_v1(
-    clean_df,
-    hold_days=hold_days,
-    cost_pct=cost_pct,
-    min_swing_atr=min_swing_atr,
-    confirmation_delay=pivot_window,
-    max_cycle_position=max_cycle_position,
-    start_index=200
-)
+        clean_df,
+        hold_days=hold_days,
+        cost_pct=cost_pct,
+        min_swing_atr=min_swing_atr,
+        confirmation_delay=pivot_window,
+        max_cycle_position=max_cycle_position,
+        start_index=200
+    )
 
-fractal_train_trades, fractal_train_stats = run_fractal_decision_backtest_v1(
-    train_df,
-    hold_days=hold_days,
-    cost_pct=cost_pct,
-    min_swing_atr=min_swing_atr,
-    confirmation_delay=pivot_window,
-    max_cycle_position=max_cycle_position,
-    start_index=200
-)
+    fractal_train_trades, fractal_train_stats = run_fractal_decision_backtest_v1(
+        train_df,
+        hold_days=hold_days,
+        cost_pct=cost_pct,
+        min_swing_atr=min_swing_atr,
+        confirmation_delay=pivot_window,
+        max_cycle_position=max_cycle_position,
+        start_index=200
+    )
 
-fractal_test_trades, fractal_test_stats = run_fractal_decision_backtest_v1(
-    test_df,
-    hold_days=hold_days,
-    cost_pct=cost_pct,
-    min_swing_atr=min_swing_atr,
-    confirmation_delay=pivot_window,
-    max_cycle_position=max_cycle_position,
-    start_index=test_start_index
-)
+    fractal_test_trades, fractal_test_stats = run_fractal_decision_backtest_v1(
+        test_df,
+        hold_days=hold_days,
+        cost_pct=cost_pct,
+        min_swing_atr=min_swing_atr,
+        confirmation_delay=pivot_window,
+        max_cycle_position=max_cycle_position,
+        start_index=test_start_index
+    )
 
     st.info(
         """
