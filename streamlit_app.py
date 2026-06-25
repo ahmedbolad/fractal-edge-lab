@@ -1232,15 +1232,15 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
 
     reasons = []
     if risk_pct <= LOW_EARLY_ENTRY_RISK_PCT:
-        reasons.append("خطر الإلغاء منخفض")
+        reasons.append("الإلغاء قريب والخطر منخفض")
     elif risk_pct <= MEDIUM_EARLY_ENTRY_RISK_PCT:
-        reasons.append("خطر الإلغاء مقبول")
+        reasons.append("الخطر مقبول مقارنة بالصعود")
     elif risk_pct <= HIGH_EARLY_ENTRY_RISK_PCT:
-        reasons.append("خطر الإلغاء عالي")
+        reasons.append("فرصة قوية لكن الإلغاء بعيد")
     else:
-        reasons.append("خطر الإلغاء عالي جداً")
+        reasons.append("مخاطرة عالية جداً؛ لا تدخل بحجم كبير")
     if is_crypto_candidate:
-        reasons.append("فلتر كريبتو أوسع بدون حذف بسبب التذبذب")
+        reasons.append("كريبتو: فلتر أوسع بسبب التذبذب")
     if distance_to_52w_high_pct >= 50:
         reasons.append("مساحة صعود كبيرة")
     if distance_to_20d_high_pct <= 8:
@@ -1250,7 +1250,7 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
     if volatility_expansion >= 1.05:
         reasons.append("بداية توسع حركة")
     if cycle_phase in ["بداية دورة", "منتصف دورة"]:
-        reasons.append("الدورة ليست متأخرة")
+        reasons.append("الدورة ما زالت صالحة")
     if not reasons:
         reasons.append("دخول مبكر مع صعود محتمل فوق 50%")
 
@@ -1268,7 +1268,7 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
         "الخطر إلى الإلغاء": f"{risk_pct:.1f}%",
         "نسبة الصعود المفتوحة": f"{upside_pct:.1f}%+",
         "هدف بنيوي مفتوح": f"{structural_target:.2f}",
-        "نافذة المراقبة": f"{start_watch_date.date()} إلى {end_date.date()}",
+        "مدة صلاحية الفكرة": f"{start_watch_date.date()} إلى {end_date.date()}",
         "مرحلة الدورة": cycle_phase,
         "خطر فشل الاختراق": breakout_risk,
         "سبب الظهور": " + ".join(reasons[:3]),
@@ -1965,7 +1965,7 @@ with tab_test:
 
 with tab_opportunities:
     st.subheader("صيد الانفجارات السعرية")
-    st.caption("قائمة مستقلة تبحث عن دخول مبكر قبل التسارع: صعود محتمل يبدأ من 50%، مع عرض نسبة الخطر وتصنيفها تلقائياً. ليست وعداً بالصعود ولا توصية شراء.")
+    st.caption("قائمة مستقلة للبحث عن فرص صعود قوية تبدأ من 50%+، مع دخول مبكر وخطر إلغاء ظاهر تلقائياً. ليست وعداً بالصعود ولا توصية شراء.")
 
     st.caption("طريقة التحديث: عند الضغط على زر الفحص يتم تحديث البيانات وإعادة بناء القائمة.")
 
@@ -2003,7 +2003,7 @@ with tab_opportunities:
             "الخطر إلى الإلغاء",
             "نسبة الصعود المفتوحة",
             "هدف بنيوي مفتوح",
-            "نافذة المراقبة",
+            "مدة صلاحية الفكرة",
             "مرحلة الدورة",
             "خطر فشل الاختراق",
             "سبب الظهور",
@@ -2019,4 +2019,4 @@ with tab_opportunities:
             f"الدخول المبكر {top_row['الدخول المبكر']}، الإلغاء {top_row['إلغاء الفكرة']}، "
             f"الخطر {top_row['الخطر إلى الإلغاء']}، والصعود المفتوح {top_row['نسبة الصعود المفتوحة']}."
         )
-        st.caption("اقرأ هذه القائمة كقائمة مراقبة. المنصة لا تخفي الفرص بسبب رقم خطر ثابت؛ هي تعرض نسبة الخطر تلقائياً وتصنفها، والإلغاء هو الخط الأحمر إذا فشلت الفكرة.")
+        st.caption("اقرأ هذه القائمة كقائمة مراقبة. مدة صلاحية الفكرة تعني الفترة التي يبقى فيها السيناريو صالحاً قبل إعادة الفحص. المنصة لا تخفي الفرص بسبب رقم خطر ثابت؛ هي تعرض نسبة الخطر تلقائياً وتصنفها، والإلغاء هو الخط الأحمر إذا فشلت الفكرة.")
