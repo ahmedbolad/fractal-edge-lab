@@ -4,7 +4,7 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(
     page_title="Fractal Edge Lab",
@@ -75,6 +75,7 @@ SYMBOL_ALIASES = {
 # قائمة بحث مقفلة لصيد الانفجارات السعرية.
 # الهدف ليس وعداً بالصعود، بل فلترة أصول صغيرة/متحركة عندها سيناريو بنيوي لصعود مرتفع يبدأ من 50% ومفتوح للأعلى.
 EXPLOSION_MIN_UPSIDE_PCT = 50.0
+MAX_EARLY_ENTRY_RISK_PCT = 10.0
 EXPLOSION_UNIVERSE = [
     # أمثلة أسهم صغيرة/مضاربية عالية المخاطرة؛ بعضها قد لا يعطي بيانات دائماً من Yahoo.
     ("BNAI", "Brand Engagement Network", "سهم صغير"),
@@ -118,6 +119,16 @@ EXPLOSION_UNIVERSE = [
     ("DOGE-USD", "Dogecoin", "كريبتو"),
     ("ADA-USD", "Cardano", "كريبتو"),
     ("XRP-USD", "XRP", "كريبتو"),
+
+    # فوركس وسلع - لا نتوقع دائماً 50% مثل الأسهم الصغيرة، لكنها تدخل كفرص حركة قوية عندما يسمح الهيكل بذلك.
+    ("EURUSD=X", "EUR/USD", "فوركس"),
+    ("GBPUSD=X", "GBP/USD", "فوركس"),
+    ("JPY=X", "USD/JPY", "فوركس"),
+    ("GC=F", "Gold Futures", "سلع"),
+    ("SI=F", "Silver Futures", "سلع"),
+    ("CL=F", "WTI Crude Oil", "سلع"),
+    ("NG=F", "Natural Gas", "سلع"),
+    ("HG=F", "Copper", "سلع"),
 ]
 
 # إبقاء الاسم القديم كـ alias حتى لا ينكسر أي جزء قديم في الصفحة.
@@ -1008,8 +1019,8 @@ def safe_ratio(numerator: float, denominator: float, fallback: float = np.nan) -
 
 def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT):
     """
-    صيد انفجار سعري محتمل مثل أسهم BNAI قبل القفزة.
-    لا يقول "سوف يصعد"، بل يفلتر مرشحاً إذا توفرت: ضغط/تجميع، بداية دورة، حجم يتحسن، مساحة صعود مفتوحة فوق 50%.
+    فلتر صيد الانفجارات: يبحث عن دخول مبكر محدود الخطر،
+    مع صعود بنيوي محتمل يبدأ من 50% ومفتوح للأعلى.
     """
     candidate_asset_type = infer_asset_type(ticker)
     data_candidate = load_data(ticker, PERIOD, INTERVAL)
@@ -1151,12 +1162,34 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
     entry_date = next_trading_date(clean_candidate["Date"].iloc[-1], max(2, horizon_bars // 5), candidate_asset_type)
     end_date = next_trading_date(clean_candidate["Date"].iloc[-1], horizon_bars, candidate_asset_type)
 
+    # في صيد الانفجارات نريد دخولاً مبكراً قبل التسارع، لا دخولاً متأخراً بعد الاختراق.
+    early_mid = last_close_candidate
+    early_low = early_mid * 0.98
+    early_high = early_mid * 1.02
+
+    activation_low = entry_low
+    activation_high = entry_high
+
     invalidation = candidate_scenario.get("invalidation", np.nan)
     if pd.isna(invalidation):
-        invalidation = max(0.01, entry_low - 1.3 * atr_candidate)
+        invalidation = max(0.01, early_mid - 1.3 * atr_candidate)
     invalidation = float(invalidation)
 
-    risk_pct = max(0.0, (entry_mid / invalidation - 1) * 100) if invalidation > 0 and invalidation < entry_mid else np.nan
+    # يجب أن يكون إلغاء الفكرة تحت الدخول المبكر، والخطر لا يتجاوز السقف المعتمد.
+    risk_pct = max(0.0, (early_mid / invalidation - 1) * 100) if invalidation > 0 and invalidation < early_mid else np.nan
+    if pd.isna(risk_pct) or risk_pct > MAX_EARLY_ENTRY_RISK_PCT:
+        return None
+
+    # لا نريد سهماً بعيداً جداً عن بوابة التفعيل؛ الدخول المبكر يكون قبل الاختراق بقليل، لا في مكان عشوائي.
+    distance_to_activation_pct = max(0.0, (activation_high / early_mid - 1) * 100) if activation_high > 0 else 999
+    if distance_to_activation_pct > 18:
+        return None
+
+    if risk_pct <= 5:
+        early_status = "دخول مبكر ممتاز"
+    else:
+        early_status = "دخول مبكر مقبول عالي التذبذب"
+
     reward_risk_score = upside_pct / max(risk_pct, 3.0) if not pd.isna(risk_pct) else upside_pct / 8
 
     explosion_score = (
@@ -1185,10 +1218,14 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
         "الرمز": ticker,
         "الاسم": name,
         "النوع": kind,
+        "السعر الحالي": f"{last_close_candidate:.2f}",
+        "الحالة": early_status,
         "نسبة الصعود المفتوحة": f"{upside_pct:.1f}%+",
-        "منطقة الدخول": f"{entry_low:.2f} - {entry_high:.2f}",
+        "الدخول المبكر": f"{early_low:.2f} - {early_high:.2f}",
+        "الدخول المؤكد": f"إغلاق فوق {activation_high:.2f}",
+        "الخطر إلى الإلغاء": f"{risk_pct:.1f}%",
         "هدف بنيوي مفتوح": f"{structural_target:.2f}",
-        "إلغاء السيناريو": f"{invalidation:.2f}",
+        "إلغاء الفكرة": f"{invalidation:.2f}",
         "نافذة المراقبة": f"{entry_date.date()} إلى {end_date.date()}",
         "مرحلة الدورة": cycle_phase,
         "خطر فشل الاختراق": breakout_risk,
@@ -1226,6 +1263,139 @@ def scan_explosion_hunter(min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT) -> p
 def scan_high_upside_opportunities(min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT) -> pd.DataFrame:
     return scan_explosion_hunter(min_upside_pct=min_upside_pct)
 
+
+
+
+OPTION_UNIVERSE = [
+    (ticker, name, kind)
+    for ticker, name, kind in EXPLOSION_UNIVERSE
+    if kind not in ["كريبتو", "فوركس", "سلع"] and not ticker.endswith("=X") and not ticker.endswith("=F")
+]
+
+
+def parse_percent_text(value, fallback=np.nan):
+    try:
+        return float(str(value).replace("%+", "").replace("%", "").strip())
+    except Exception:
+        return fallback
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def scan_options_hunter() -> pd.DataFrame:
+    """
+    قائمة منفصلة للأوبشن: نبدأ من الأسهم التي أعطت إشارة دخول مبكر،
+    ثم نبحث في عقود Call ذات سيولة مقبولة وتاريخ انتهاء كافٍ.
+    """
+    rows = []
+
+    for ticker, name, kind in OPTION_UNIVERSE:
+        try:
+            base = analyze_explosion_candidate(ticker, name, kind, min_upside_pct=EXPLOSION_MIN_UPSIDE_PCT)
+            if base is None:
+                continue
+
+            current_price = parse_percent_text(base.get("السعر الحالي", np.nan), np.nan)
+            if pd.isna(current_price) or current_price <= 0:
+                continue
+
+            yf_ticker = yf.Ticker(ticker)
+            expirations = list(getattr(yf_ticker, "options", []) or [])
+            if not expirations:
+                continue
+
+            today = datetime.now().date()
+            valid_expirations = []
+            for exp in expirations:
+                try:
+                    exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                    days_out = (exp_date - today).days
+                    if 30 <= days_out <= 180:
+                        valid_expirations.append((exp, exp_date, days_out))
+                except Exception:
+                    continue
+
+            if not valid_expirations:
+                continue
+
+            # نختار أقرب انتهاء مناسب، لأن الهدف صيد حركة قريبة مع وقت كافٍ.
+            exp, exp_date, days_out = sorted(valid_expirations, key=lambda x: x[2])[0]
+            chain = yf_ticker.option_chain(exp)
+            calls = getattr(chain, "calls", pd.DataFrame())
+            if calls.empty:
+                continue
+
+            calls = calls.copy()
+            for col in ["strike", "bid", "ask", "lastPrice", "volume", "openInterest", "impliedVolatility"]:
+                if col not in calls.columns:
+                    calls[col] = np.nan
+
+            calls = calls.replace([np.inf, -np.inf], np.nan).dropna(subset=["strike"])
+            if calls.empty:
+                continue
+
+            # نبحث عن Call قريب أو أعلى قليلاً من السعر الحالي، وليس بعيد جداً.
+            calls = calls[(calls["strike"] >= current_price * 0.95) & (calls["strike"] <= current_price * 1.35)]
+            if calls.empty:
+                continue
+
+            calls["mid"] = np.where(
+                (calls["bid"].fillna(0) > 0) & (calls["ask"].fillna(0) > 0),
+                (calls["bid"] + calls["ask"]) / 2,
+                calls["lastPrice"]
+            )
+            calls["spread_pct"] = np.where(
+                calls["mid"] > 0,
+                (calls["ask"].fillna(0) - calls["bid"].fillna(0)) / calls["mid"] * 100,
+                np.nan
+            )
+            calls["volume"] = calls["volume"].fillna(0)
+            calls["openInterest"] = calls["openInterest"].fillna(0)
+
+            liquid = calls[
+                (calls["mid"].fillna(0) > 0)
+                & (calls["spread_pct"].fillna(999) <= 35)
+                & ((calls["volume"] >= 10) | (calls["openInterest"] >= 100))
+            ].copy()
+
+            if liquid.empty:
+                # إذا ما في عقد نظيف، لا نعرض عقد سيئ حتى لا تتلخبط القائمة.
+                continue
+
+            liquid["score"] = (
+                (100 - (liquid["spread_pct"].clip(0, 100)))
+                + np.log1p(liquid["volume"].clip(lower=0)) * 8
+                + np.log1p(liquid["openInterest"].clip(lower=0)) * 5
+                - abs(liquid["strike"] / current_price - 1) * 40
+            )
+            best = liquid.sort_values("score", ascending=False).iloc[0]
+
+            rows.append({
+                "السهم": ticker,
+                "الاسم": name,
+                "حالة السهم": base.get("الحالة", ""),
+                "الدخول المبكر للسهم": base.get("الدخول المبكر", ""),
+                "إلغاء فكرة السهم": base.get("إلغاء الفكرة", ""),
+                "خطر السهم": base.get("الخطر إلى الإلغاء", ""),
+                "نسبة الصعود المفتوحة": base.get("نسبة الصعود المفتوحة", ""),
+                "العقد المقترح": f"CALL {float(best['strike']):.2f}",
+                "تاريخ الانتهاء": str(exp_date),
+                "أيام للانتهاء": int(days_out),
+                "سعر العقد التقريبي": f"{float(best['mid']):.2f}",
+                "Spread": f"{float(best['spread_pct']):.1f}%",
+                "Open Interest": int(best["openInterest"]),
+                "Volume": int(best["volume"]),
+                "سبب الاختيار": "السهم مرشح دخول مبكر + عقد Call قريب بسيولة مقبولة ووقت كافٍ",
+                "score": float(best["score"]),
+            })
+        except Exception:
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    df_options = pd.DataFrame(rows)
+    df_options = df_options.sort_values(["score"], ascending=False).reset_index(drop=True)
+    return df_options
 
 data = load_data(symbol, PERIOD, INTERVAL)
 
@@ -1294,7 +1464,7 @@ forward_scenario = build_forward_scenario(
 )
 latest_close = float(latest["Close"])
 
-tab_decision, tab_chart, tab_test, tab_opportunities = st.tabs(["القرار", "الشارت", "الاختبار", "صيد الانفجارات"])
+tab_decision, tab_chart, tab_test, tab_opportunities, tab_options = st.tabs(["القرار", "الشارت", "الاختبار", "صيد الانفجارات", "عقود الأوبشن"])
 
 with tab_decision:
     st.subheader(f"{instrument_name} — الخلاصة")
@@ -1914,10 +2084,14 @@ with tab_opportunities:
             "الرمز",
             "الاسم",
             "النوع",
+            "السعر الحالي",
+            "الحالة",
             "نسبة الصعود المفتوحة",
-            "منطقة الدخول",
+            "الدخول المبكر",
+            "الدخول المؤكد",
+            "الخطر إلى الإلغاء",
             "هدف بنيوي مفتوح",
-            "إلغاء السيناريو",
+            "إلغاء الفكرة",
             "نافذة المراقبة",
             "مرحلة الدورة",
             "خطر فشل الاختراق",
@@ -1930,7 +2104,57 @@ with tab_opportunities:
         )
         top_row = explosion_df.iloc[0]
         st.success(
-            f"أقوى مرشح الآن: {top_row['الرمز']} — صعود مفتوح {top_row['نسبة الصعود المفتوحة']}، "
-            f"ومنطقة الدخول {top_row['منطقة الدخول']}، ونافذة المراقبة {top_row['نافذة المراقبة']}."
+            f"أقوى مرشح الآن: {top_row['الرمز']} — {top_row['الحالة']}، "
+            f"الدخول المبكر {top_row['الدخول المبكر']}، والخطر {top_row['الخطر إلى الإلغاء']}."
         )
         st.caption("اقرأ هذه القائمة كقائمة مراقبة. القرار النهائي يبقى من صفحة القرار والشارت لكل رمز، مع إلغاء السيناريو واضح.")
+
+
+with tab_options:
+    st.subheader("عقود الأوبشن")
+    st.caption("قائمة مستقلة لعقود Call مبنية على أسهم صيد الانفجارات فقط. لا تشمل الكريبتو أو الفوركس أو السلع لأن الأوبشن هنا مرتبط بأسهم قابلة للتداول بعقود.")
+    st.caption("المنصة تبحث عن السهم أولاً، ثم تقترح عقداً قريباً مع تاريخ انتهاء كافٍ وسيولة مقبولة. ليست توصية شراء.")
+
+    last_options_update = st.session_state.get("options_hunter_last_update")
+    if last_options_update:
+        st.caption(f"آخر فحص للأوبشن: {last_options_update}")
+
+    if st.button("تحديث وفحص عقود الأوبشن الآن", use_container_width=True):
+        with st.spinner("جاري فحص الأسهم ثم سلاسل الأوبشن... قد يستغرق وقتاً أطول"):
+            try:
+                load_data.clear()
+                scan_options_hunter.clear()
+            except Exception:
+                pass
+            st.session_state["options_hunter"] = scan_options_hunter()
+            st.session_state["options_hunter_last_update"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+
+    options_df = st.session_state.get("options_hunter", pd.DataFrame())
+
+    if options_df.empty:
+        st.warning("لا يوجد عقد أوبشن مناسب الآن حسب فلتر الدخول المبكر والسيولة. عدم ظهور عقد أفضل من عرض عقد ضعيف أو سبريد عالي.")
+    else:
+        option_cols = [
+            "السهم",
+            "الاسم",
+            "حالة السهم",
+            "الدخول المبكر للسهم",
+            "إلغاء فكرة السهم",
+            "خطر السهم",
+            "نسبة الصعود المفتوحة",
+            "العقد المقترح",
+            "تاريخ الانتهاء",
+            "أيام للانتهاء",
+            "سعر العقد التقريبي",
+            "Spread",
+            "Open Interest",
+            "Volume",
+            "سبب الاختيار",
+        ]
+        st.dataframe(options_df[option_cols], use_container_width=True, hide_index=True)
+        top_option = options_df.iloc[0]
+        st.success(
+            f"أقوى عقد الآن: {top_option['السهم']} {top_option['العقد المقترح']} — "
+            f"انتهاء {top_option['تاريخ الانتهاء']}، Spread {top_option['Spread']}."
+        )
+        st.caption("الأوبشن عالي المخاطرة بطبيعته. استخدم هذه القائمة كفلتر مراقبة، وليس أمر شراء مباشر.")
