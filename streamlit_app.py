@@ -787,6 +787,27 @@ def run_fractal_decision_backtest_v1(
     return trades_df, stats
 
 
+
+def clamp_entry_zone_around_midpoint(entry_low, entry_high, max_pct: float = 0.02):
+    """Keep the ideal entry zone tight: no more than +/- max_pct around its midpoint."""
+    if pd.isna(entry_low) or pd.isna(entry_high):
+        return entry_low, entry_high
+    low = float(entry_low)
+    high = float(entry_high)
+    if low <= 0 or high <= 0:
+        return low, high
+    low, high = sorted([low, high])
+    midpoint = (low + high) / 2
+    max_low = midpoint * (1 - max_pct)
+    max_high = midpoint * (1 + max_pct)
+    return max(low, max_low), min(high, max_high)
+
+
+def format_entry_note(entry_low, entry_high, suffix: str = "") -> str:
+    if pd.isna(entry_low) or pd.isna(entry_high):
+        return "نقطة الدخول المثالية: لا توجد منطقة دخول صالحة الآن؛ انتظر تحول البنية إلى صاعدة."
+    return f"نقطة الدخول المثالية: انتظر قرب {entry_low:.2f} - {entry_high:.2f}، نطاق ضيق لا يتجاوز ±2%{suffix}."
+
 def build_forward_scenario(
     df: pd.DataFrame,
     swings: list[dict],
@@ -820,7 +841,8 @@ def build_forward_scenario(
         invalidation = min(last_close - 1.5 * atr, last_low)
         entry_low = max(last_low, last_close - 0.8 * atr)
         entry_high = last_close + 0.3 * atr
-        entry_note = "نقطة الدخول المثالية: راقب قرب المنطقة الحالية/أي رجوع خفيف داخل بداية الدورة."
+        entry_low, entry_high = clamp_entry_zone_around_midpoint(entry_low, entry_high, max_pct=0.02)
+        entry_note = format_entry_note(entry_low, entry_high)
         note = "السيناريو الصاعد يبقى قائماً ما دام السعر لا يكسر منطقة الإلغاء."
     elif structure == "بنية صاعدة" and (fb_risk == "مرتفع" or (not pd.isna(position) and position >= 75)):
         label = "تصحيح أو تهدئة محتملة"
@@ -831,7 +853,8 @@ def build_forward_scenario(
         pullback_low = max(last_low, min(ma20, ma50, last_close - 2.2 * atr))
         pullback_high = max(pullback_low, min(last_close - 1.0 * atr, max(ma20, ma50)))
         entry_low, entry_high = sorted([float(pullback_low), float(pullback_high)])
-        entry_note = f"نقطة الدخول المثالية: انتظر قرب {entry_low:.2f} - {entry_high:.2f}."
+        entry_low, entry_high = clamp_entry_zone_around_midpoint(entry_low, entry_high, max_pct=0.02)
+        entry_note = format_entry_note(entry_low, entry_high)
         note = "السعر متأخر داخل الدورة أو توجد علامة فشل اختراق؛ الأفضل انتظار قاع جديد."
     elif structure == "بنية هابطة":
         label = "ضغط هابط محتمل"
@@ -852,7 +875,8 @@ def build_forward_scenario(
         entry_low = max(last_low, last_close - 1.2 * atr)
         entry_high = last_close - 0.4 * atr
         entry_low, entry_high = sorted([float(entry_low), float(entry_high)])
-        entry_note = f"نقطة الدخول المثالية: انتظر قرب {entry_low:.2f} - {entry_high:.2f} فقط إذا تحسنت البنية."
+        entry_low, entry_high = clamp_entry_zone_around_midpoint(entry_low, entry_high, max_pct=0.02)
+        entry_note = format_entry_note(entry_low, entry_high, suffix=" فقط إذا تحسنت البنية")
         note = "لا توجد أفضلية بنيوية كافية؛ الانتظار أفضل من التوقع القسري."
 
     low, high = sorted([float(low), float(high)])
@@ -1329,7 +1353,7 @@ with tab_chart:
                         y=entry_y,
                         mode="markers",
                         name="دخول مؤكد",
-                        marker=dict(symbol="triangle-up", size=14, color="#00e676", line=dict(color="#0b0f19", width=1)),
+                        marker=dict(symbol="triangle-up", size=28, color="#00e676", line=dict(color="#ffffff", width=2)),
                         text=entry_text,
                         hovertemplate="%{text}<extra></extra>",
                     ),
@@ -1344,7 +1368,7 @@ with tab_chart:
                         y=exit_y,
                         mode="markers",
                         name="خروج",
-                        marker=dict(symbol="triangle-down", size=15, color="#ff5252", line=dict(color="#0b0f19", width=1)),
+                        marker=dict(symbol="triangle-down", size=30, color="#ff5252", line=dict(color="#ffffff", width=2)),
                         text=exit_text,
                         hovertemplate="%{text}<extra></extra>",
                     ),
