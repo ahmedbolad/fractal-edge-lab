@@ -1292,20 +1292,22 @@ with tab_chart:
             col=1,
         )
 
-    # خط السيناريو داخل دورة التوقع.
-    fig.add_trace(
-        go.Scatter(
-            x=[last_date, future_date],
-            y=[latest_close, forward_scenario["mid"]],
-            mode="lines+markers",
-            name="سيناريو بنيوي",
-            line=dict(color="#2f80ed", width=1.5, dash="dot"),
-            marker=dict(size=5, color="#2f80ed"),
-            hovertemplate="سيناريو بنيوي<br>%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
-        ),
-        row=1,
-        col=1,
-    )
+    # إذا لم توجد منطقة دخول صالحة، نعرض مساراً بنيوياً عاماً فقط بدون مثلث دخول/خروج.
+    no_forecast_entry = pd.isna(forward_scenario.get("entry_low", np.nan)) or pd.isna(forward_scenario.get("entry_high", np.nan))
+    if no_forecast_entry:
+        fig.add_trace(
+            go.Scatter(
+                x=[last_date, future_date],
+                y=[latest_close, forward_scenario["mid"]],
+                mode="lines+markers",
+                name="سيناريو بنيوي",
+                line=dict(color="#2f80ed", width=1.5, dash="dot"),
+                marker=dict(size=5, color="#2f80ed"),
+                hovertemplate="سيناريو بنيوي<br>%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
 
     if not pd.isna(forward_scenario["invalidation"]):
         fig.add_hline(
@@ -1318,63 +1320,113 @@ with tab_chart:
             col=1,
         )
 
-    # إشارات الدخول والخروج المؤكدة من الاختبار: مثلث أخضر للدخول وسهم/مثلث أحمر للخروج.
-    if not fractal_all_trades.empty:
-        visible_start = pd.to_datetime(focus_start_date)
-        trade_df = fractal_all_trades.copy()
-        trade_df["entry_date"] = pd.to_datetime(trade_df["entry_date"])
-        trade_df["exit_date"] = pd.to_datetime(trade_df["exit_date"])
-        trade_df = trade_df[(trade_df["entry_date"] >= visible_start) | (trade_df["exit_date"] >= visible_start)]
+    # إشارات التوقع القادمة: المثلث الأخضر والأحمر هنا ليسا من الباك تست؛ هما نقاط مستقبلية محسوبة من دورة التوقع.
+    forecast_entry_valid = (
+        not pd.isna(forward_scenario.get("entry_low", np.nan))
+        and not pd.isna(forward_scenario.get("entry_high", np.nan))
+    )
 
-        if not trade_df.empty:
-            price_lookup = clean_df.set_index(pd.to_datetime(clean_df["Date"]))
+    if forecast_entry_valid:
+        forecast_entry_price = (float(forward_scenario["entry_low"]) + float(forward_scenario["entry_high"])) / 2
+        forecast_entry_date = next_trading_date(last_date, max(2, HOLD_DAYS // 3), asset_type)
+        forecast_exit_date = future_date
 
-            entry_x, entry_y, entry_text = [], [], []
-            exit_x, exit_y, exit_text = [], [], []
+        # الخروج المتوقع هو الهدف البنيوي داخل دورة التوقع، وليس صفقة مؤكدة.
+        if forward_scenario.get("bias") == "إيجابي":
+            forecast_exit_price = float(forward_scenario["range_high"])
+        elif forward_scenario.get("bias") == "حذر":
+            forecast_exit_price = max(float(forward_scenario["range_high"]), forecast_entry_price * 1.02)
+        else:
+            forecast_exit_price = float(forward_scenario["mid"])
 
-            for _, tr in trade_df.iterrows():
-                ed = pd.to_datetime(tr["entry_date"])
-                xd = pd.to_datetime(tr["exit_date"])
-                if ed in price_lookup.index:
-                    row = price_lookup.loc[ed]
-                    entry_x.append(ed)
-                    entry_y.append(float(row["Low"]) - price_pad * 0.18)
-                    entry_text.append(f"دخول مؤكد<br>{ed.date()}<br>{float(tr['entry_price']):.2f}")
-                if xd in price_lookup.index:
-                    row = price_lookup.loc[xd]
-                    exit_x.append(xd)
-                    exit_y.append(float(row["High"]) + price_pad * 0.18)
-                    exit_text.append(f"خروج<br>{xd.date()}<br>{float(tr['exit_price']):.2f}")
+        # خط توقع بثلاث نقاط: الآن -> دخول متوقع -> خروج متوقع.
+        fig.add_trace(
+            go.Scatter(
+                x=[last_date, forecast_entry_date, forecast_exit_date],
+                y=[latest_close, forecast_entry_price, forecast_exit_price],
+                mode="lines",
+                name="مسار التوقع",
+                line=dict(color="#2f80ed", width=2.2, dash="dot"),
+                hovertemplate="مسار التوقع<br>%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
 
-            if entry_x:
-                fig.add_trace(
-                    go.Scatter(
-                        x=entry_x,
-                        y=entry_y,
-                        mode="markers",
-                        name="دخول مؤكد",
-                        marker=dict(symbol="triangle-up", size=28, color="#00e676", line=dict(color="#ffffff", width=2)),
-                        text=entry_text,
-                        hovertemplate="%{text}<extra></extra>",
-                    ),
-                    row=1,
-                    col=1,
-                )
+        fig.add_trace(
+            go.Scatter(
+                x=[forecast_entry_date],
+                y=[forecast_entry_price],
+                mode="markers+text",
+                name="دخول متوقع",
+                marker=dict(
+                    symbol="triangle-up",
+                    size=42,
+                    color="#00e676",
+                    line=dict(color="#ffffff", width=3),
+                ),
+                text=["دخول"],
+                textposition="bottom center",
+                textfont=dict(color="#00e676", size=15),
+                hovertemplate=(
+                    "دخول متوقع<br>"
+                    "%{x|%Y-%m-%d}<br>"
+                    "السعر التقريبي: %{y:.2f}<br>"
+                    "حسب منطقة الدخول المثالية ±2%<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=1,
+        )
 
-            if exit_x:
-                fig.add_trace(
-                    go.Scatter(
-                        x=exit_x,
-                        y=exit_y,
-                        mode="markers",
-                        name="خروج",
-                        marker=dict(symbol="triangle-down", size=30, color="#ff5252", line=dict(color="#ffffff", width=2)),
-                        text=exit_text,
-                        hovertemplate="%{text}<extra></extra>",
-                    ),
-                    row=1,
-                    col=1,
-                )
+        fig.add_trace(
+            go.Scatter(
+                x=[forecast_exit_date],
+                y=[forecast_exit_price],
+                mode="markers+text",
+                name="خروج متوقع",
+                marker=dict(
+                    symbol="triangle-down",
+                    size=46,
+                    color="#ff1744",
+                    line=dict(color="#ffffff", width=3),
+                ),
+                text=["خروج"],
+                textposition="top center",
+                textfont=dict(color="#ff5252", size=15),
+                hovertemplate=(
+                    "خروج متوقع<br>"
+                    "%{x|%Y-%m-%d}<br>"
+                    "السعر التقريبي: %{y:.2f}<br>"
+                    "حسب نهاية دورة التوقع<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=1,
+        )
+
+        # خطوط عمودية خفيفة لتوضيح يوم الدخول ويوم الخروج داخل المستقبل.
+        fig.add_vline(
+            x=forecast_entry_date,
+            line_dash="dot",
+            line_color="rgba(0,230,118,0.55)",
+            annotation_text="دخول متوقع",
+            annotation_position="bottom right",
+            row=1,
+            col=1,
+        )
+        fig.add_vline(
+            x=forecast_exit_date,
+            line_dash="dot",
+            line_color="rgba(255,23,68,0.60)",
+            annotation_text="خروج متوقع",
+            annotation_position="top right",
+            row=1,
+            col=1,
+        )
+
+        y_min = min(y_min, forecast_entry_price - price_pad * 0.7, forecast_exit_price - price_pad * 0.45)
+        y_max = max(y_max, forecast_entry_price + price_pad * 0.45, forecast_exit_price + price_pad * 0.7)
 
     rangebreaks = []
     if asset_type == "stock":
@@ -1469,7 +1521,7 @@ with tab_chart:
 
     st.plotly_chart(fig, use_container_width=True, config=chart_config)
     st.caption(
-        "الشارت يعرض الدورة الحالية، دورة التوقع، منطقة الدخول المثالية، ومثلثات الدخول/الخروج المؤكدة من الاختبار. "
+        "الشارت يعرض الدورة الحالية، دورة التوقع، منطقة الدخول المثالية، ومثلث الدخول المتوقع وسهم الخروج المتوقع. "
         "استخدم عجلة الماوس للتكبير، واسحب يمين/يسار للتحريك. التوقع سيناريو بنيوي وليس ضماناً."
     )
 
