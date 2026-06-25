@@ -1266,11 +1266,39 @@ def scan_high_upside_opportunities(min_upside_pct: float = EXPLOSION_MIN_UPSIDE_
 
 
 
-OPTION_UNIVERSE = [
-    (ticker, name, kind)
-    for ticker, name, kind in EXPLOSION_UNIVERSE
-    if kind not in ["كريبتو", "فوركس", "سلع"] and not ticker.endswith("=X") and not ticker.endswith("=F")
+# قائمة الأوبشن مستقلة تماماً عن قائمة الأسهم/الكريبتو/الفوركس/السلع.
+# لا نأخذ هذه القائمة من EXPLOSION_UNIVERSE حتى لا تختلط الأمور بصرياً أو منطقياً.
+# هنا نضع فقط أسهماً أو ETFs قابلة غالباً لتداول عقود Options عبر Yahoo Finance.
+OPTIONS_UNDERLYING_UNIVERSE = [
+    ("TSLA", "Tesla", "سهم أوبشن"),
+    ("NVDA", "NVIDIA", "سهم أوبشن"),
+    ("AMD", "AMD", "سهم أوبشن"),
+    ("AAPL", "Apple", "سهم أوبشن"),
+    ("MSFT", "Microsoft", "سهم أوبشن"),
+    ("META", "Meta", "سهم أوبشن"),
+    ("AMZN", "Amazon", "سهم أوبشن"),
+    ("GOOGL", "Alphabet", "سهم أوبشن"),
+    ("PLTR", "Palantir", "سهم أوبشن"),
+    ("MSTR", "MicroStrategy", "سهم أوبشن"),
+    ("COIN", "Coinbase", "سهم أوبشن"),
+    ("MARA", "MARA Holdings", "سهم أوبشن"),
+    ("RIOT", "Riot Platforms", "سهم أوبشن"),
+    ("SMCI", "Super Micro Computer", "سهم أوبشن"),
+    ("SOFI", "SoFi", "سهم أوبشن"),
+    ("OPEN", "Opendoor", "سهم أوبشن"),
+    ("RIVN", "Rivian", "سهم أوبشن"),
+    ("IONQ", "IonQ", "سهم أوبشن"),
+    ("RGTI", "Rigetti Computing", "سهم أوبشن"),
+    ("QBTS", "D-Wave Quantum", "سهم أوبشن"),
+    ("QUBT", "Quantum Computing", "سهم أوبشن"),
+    ("ASTS", "AST SpaceMobile", "سهم أوبشن"),
+    ("ACHR", "Archer Aviation", "سهم أوبشن"),
+    ("JOBY", "Joby Aviation", "سهم أوبشن"),
+    ("SPY", "S&P 500 ETF", "ETF أوبشن"),
+    ("QQQ", "Nasdaq 100 ETF", "ETF أوبشن"),
 ]
+
+OPTION_UNIVERSE = OPTIONS_UNDERLYING_UNIVERSE
 
 
 def parse_percent_text(value, fallback=np.nan):
@@ -1283,8 +1311,11 @@ def parse_percent_text(value, fallback=np.nan):
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def scan_options_hunter() -> pd.DataFrame:
     """
-    قائمة منفصلة للأوبشن: نبدأ من الأسهم التي أعطت إشارة دخول مبكر،
-    ثم نبحث في عقود Call ذات سيولة مقبولة وتاريخ انتهاء كافٍ.
+    قائمة مستقلة للأوبشن:
+    1) تفحص فقط الأسهم/ETFs الموجودة في OPTIONS_UNDERLYING_UNIVERSE.
+    2) لا تفحص كريبتو أو فوركس أو سلع.
+    3) لا تقرأ نتائج تبويب صيد الانفجارات.
+    4) تختار عقد Call فقط إذا كان السهم الأساسي يعطي دخولاً مبكراً والخطر مقبولاً.
     """
     rows = []
 
@@ -1384,7 +1415,7 @@ def scan_options_hunter() -> pd.DataFrame:
                 "Spread": f"{float(best['spread_pct']):.1f}%",
                 "Open Interest": int(best["openInterest"]),
                 "Volume": int(best["volume"]),
-                "سبب الاختيار": "السهم مرشح دخول مبكر + عقد Call قريب بسيولة مقبولة ووقت كافٍ",
+                "سبب الاختيار": "السهم الأساسي يعطي دخولاً مبكراً + عقد Call قريب بسيولة مقبولة ووقت كافٍ",
                 "score": float(best["score"]),
             })
         except Exception:
@@ -2056,7 +2087,7 @@ with tab_test:
 
 with tab_opportunities:
     st.subheader("صيد الانفجارات السعرية")
-    st.caption("قائمة مستقلة تبحث عن أسهم/كريبتو عندها سيناريو انفجار سعري محتمل يبدأ من 50% ومفتوح للأعلى. ليست وعداً بالصعود ولا توصية شراء.")
+    st.caption("قائمة مستقلة للأصول فقط: أسهم، كريبتو، فوركس، وسلع. لا تعرض عقود أوبشن إطلاقاً.")
 
     st.caption("طريقة التحديث: عند الضغط على زر الفحص يتم تحديث البيانات وإعادة بناء القائمة.")
 
@@ -2112,8 +2143,8 @@ with tab_opportunities:
 
 with tab_options:
     st.subheader("عقود الأوبشن")
-    st.caption("قائمة مستقلة لعقود Call مبنية على أسهم صيد الانفجارات فقط. لا تشمل الكريبتو أو الفوركس أو السلع لأن الأوبشن هنا مرتبط بأسهم قابلة للتداول بعقود.")
-    st.caption("المنصة تبحث عن السهم أولاً، ثم تقترح عقداً قريباً مع تاريخ انتهاء كافٍ وسيولة مقبولة. ليست توصية شراء.")
+    st.caption("قائمة مستقلة تماماً لعقود Call فقط. لا تستخدم قائمة صيد الانفجارات، ولا تشمل كريبتو أو فوركس أو سلع.")
+    st.caption("هنا نفحص أسهماً و ETFs قابلة للأوبشن، ثم نقترح عقداً قريباً فقط إذا كان السهم الأساسي يعطي دخولاً مبكراً وخطراً مقبولاً وسيولة العقد مناسبة.")
 
     last_options_update = st.session_state.get("options_hunter_last_update")
     if last_options_update:
