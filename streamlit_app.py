@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(
     page_title="Fractal Edge Lab",
@@ -90,6 +91,25 @@ def resolve_symbol(value: str) -> tuple[str, str, str]:
     return ticker, ticker, raw
 
 
+def infer_asset_type(symbol: str) -> str:
+    symbol = str(symbol).upper()
+    if symbol.endswith("-USD"):
+        return "crypto"
+    if symbol.endswith("=F") or symbol.endswith("=X"):
+        return "non_stock"
+    return "stock"
+
+def annualization_factor(asset_type: str) -> int:
+    return 365 if asset_type == "crypto" else 252
+
+def next_trading_date(date_value, bars: int, asset_type: str):
+    date_value = pd.to_datetime(date_value)
+    if asset_type == "crypto":
+        return date_value + pd.Timedelta(days=int(bars))
+    dates = pd.bdate_range(start=date_value, periods=bars + 1)
+    return dates[-1]
+
+
 input_col, refresh_col = st.columns([4, 1])
 
 with input_col:
@@ -109,6 +129,7 @@ if refresh_clicked:
     st.rerun()
 
 symbol, instrument_name, raw_symbol_input = resolve_symbol(symbol_input)
+asset_type = infer_asset_type(symbol)
 
 if not symbol:
     st.warning("اكتب رمز السهم أو اسم الأصل أولاً.")
@@ -135,8 +156,19 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
 
     data = data.reset_index()
 
-    date_col = "Date" if "Date" in data.columns else "Datetime"
+    date_col = "Date" if "Date" in data.columns else "Datetime" if "Datetime" in data.columns else None
+    if date_col is None:
+        return pd.DataFrame()
+
     data = data.rename(columns={date_col: "Date"})
+
+    required_price_cols = ["Open", "High", "Low", "Close"]
+    for col in required_price_cols:
+        if col not in data.columns:
+            return pd.DataFrame()
+
+    if "Volume" not in data.columns:
+        data["Volume"] = 0
 
     needed_cols = ["Date", "Open", "High", "Low", "Close", "Volume"]
     data = data[needed_cols].copy()
@@ -144,12 +176,14 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         data[col] = pd.to_numeric(data[col], errors="coerce")
 
-    data = data.dropna().reset_index(drop=True)
+    data["Volume"] = data["Volume"].fillna(0)
+    data = data.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(drop=True)
     return data
 
 
-def add_market_features(data: pd.DataFrame) -> pd.DataFrame:
+def add_market_features(data: pd.DataFrame, asset_type: str = "stock") -> pd.DataFrame:
     df = data.copy()
+    ann_factor = annualization_factor(asset_type)
 
     df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
 
@@ -172,8 +206,8 @@ def add_market_features(data: pd.DataFrame) -> pd.DataFrame:
     df["distance_from_high_20_pct"] = (df["Close"] / df["high_20"] - 1) * 100
     df["distance_from_low_20_pct"] = (df["Close"] / df["low_20"] - 1) * 100
 
-    df["volatility_20"] = df["log_return"].rolling(20).std() * np.sqrt(252) * 100
-    df["volatility_60"] = df["log_return"].rolling(60).std() * np.sqrt(252) * 100
+    df["volatility_20"] = df["log_return"].rolling(20).std() * np.sqrt(ann_factor) * 100
+    df["volatility_60"] = df["log_return"].rolling(60).std() * np.sqrt(ann_factor) * 100
     df["volatility_compression"] = df["volatility_20"] / df["volatility_60"]
 
     return df
@@ -307,6 +341,37 @@ def filter_swings_by_atr(
     return filtered
 
 
+def update_filtered_swings(
+    filtered: list[dict],
+    swing: dict,
+    df: pd.DataFrame,
+    min_atr_multiple: float = 1.5
+) -> list[dict]:
+    if not filtered:
+        return [swing]
+
+    last = filtered[-1]
+    atr_value = df.loc[swing["index"], "atr14"]
+
+    if pd.isna(atr_value) or atr_value == 0:
+        return filtered
+
+    if swing["type"] == last["type"]:
+        if swing["type"] == "high" and swing["price"] > last["price"]:
+            filtered[-1] = swing
+        elif swing["type"] == "low" and swing["price"] < last["price"]:
+            filtered[-1] = swing
+        return filtered
+
+    price_move = abs(swing["price"] - last["price"])
+    required_move = atr_value * min_atr_multiple
+
+    if price_move >= required_move:
+        filtered.append(swing)
+
+    return filtered
+
+
 def analyze_structure_from_swings(
     df: pd.DataFrame,
     swings: list[dict],
@@ -417,8 +482,10 @@ def compute_cycle_quality_at_index(
     else:
         cycle_direction = "دورة غير واضحة"
 
-    visible_bars = max(current_index + 1, 1)
-    swing_density = len(swings) / visible_bars * 100
+    density_window_start = max(current_index - 100, 0)
+    recent_swing_count = len([s for s in swings if s["index"] >= density_window_start])
+    visible_bars = max(current_index - density_window_start + 1, 1)
+    swing_density = recent_swing_count / visible_bars * 100
 
     if pd.isna(move_atr):
         cycle_quality = "غير كافٍ"
@@ -456,7 +523,8 @@ def compute_cycle_quality_at_index(
 def detect_false_breakout(
     df: pd.DataFrame,
     swings: list[dict],
-    lookback: int = 8
+    lookback: int = 8,
+    max_reference_age: int = 80
 ) -> dict:
     if len(swings) < 4:
         return {
@@ -475,36 +543,40 @@ def detect_false_breakout(
             "note": "لا توجد قمم أو قيعان كافية."
         }
 
+    last_index = len(df) - 1
     last_high = highs[-1]
     last_low = lows[-1]
 
     recent = df.tail(lookback).copy()
     latest_close = float(df["Close"].iloc[-1])
 
-    broke_high = recent["High"].max() > last_high["price"]
-    failed_high = latest_close < last_high["price"]
+    high_reference_recent = (last_index - int(last_high["index"])) <= max_reference_age
+    low_reference_recent = (last_index - int(last_low["index"])) <= max_reference_age
 
-    broke_low = recent["Low"].min() < last_low["price"]
-    failed_low = latest_close > last_low["price"]
+    broke_high = high_reference_recent and recent["High"].max() > last_high["price"]
+    failed_high = high_reference_recent and latest_close < last_high["price"]
+
+    broke_low = low_reference_recent and recent["Low"].min() < last_low["price"]
+    failed_low = low_reference_recent and latest_close > last_low["price"]
 
     if broke_high and failed_high:
         return {
             "status": "اختراق صاعد كاذب",
             "risk": "مرتفع",
-            "note": "السعر كسر آخر قمة مؤكدة ثم عاد دونها."
+            "note": "السعر كسر قمة مؤكدة حديثة ثم عاد دونها."
         }
 
     if broke_low and failed_low:
         return {
             "status": "اختراق هابط كاذب",
             "risk": "مرتفع",
-            "note": "السعر كسر آخر قاع مؤكد ثم عاد فوقه."
+            "note": "السعر كسر قاعاً مؤكداً حديثاً ثم عاد فوقه."
         }
 
     return {
         "status": "لا يوجد اختراق كاذب واضح",
         "risk": "منخفض",
-        "note": "لا يوجد فشل واضح بعد كسر آخر قمة أو قاع مؤكد."
+        "note": "لا يوجد فشل واضح بعد كسر قمة أو قاع حديث مؤكد."
     }
 
 
@@ -644,18 +716,18 @@ def run_fractal_decision_backtest_v1(
 
     trades = []
     i = start_index
+    raw_ptr = 0
+    filtered_swings: list[dict] = []
 
     while i < len(df) - hold_days - 1:
-        confirmed_swings = [
-            swing for swing in raw_swings
-            if swing["confirmed_index"] <= i
-        ]
-
-        filtered_swings = filter_swings_by_atr(
-            confirmed_swings,
-            df,
-            min_atr_multiple=MIN_SWING_ATR
-        )
+        while raw_ptr < len(raw_swings) and raw_swings[raw_ptr]["confirmed_index"] <= i:
+            filtered_swings = update_filtered_swings(
+                filtered_swings,
+                raw_swings[raw_ptr],
+                df,
+                min_atr_multiple=min_swing_atr
+            )
+            raw_ptr += 1
 
         structure_state = analyze_structure_from_swings(
             df,
@@ -708,7 +780,7 @@ def run_fractal_decision_backtest_v1(
     stats = summarize_trades(
         trades_df=trades_df,
         df=df,
-        hold_days=HOLD_DAYS,
+        hold_days=hold_days,
         start_index=start_index
     )
 
@@ -780,12 +852,6 @@ def build_forward_scenario(
     }
 
 
-def next_business_date(date_value, bars: int):
-    date_value = pd.to_datetime(date_value)
-    dates = pd.bdate_range(start=date_value, periods=bars + 1)
-    return dates[-1]
-
-
 def make_backtest_verdict(stats: dict) -> dict:
     trades = stats["trades"]
     strategy_return = stats["strategy_total_return"]
@@ -838,9 +904,11 @@ if data.empty:
     st.error("لم يتم العثور على بيانات لهذا الرمز. تأكد من كتابة الرمز بشكل صحيح.")
     st.stop()
 
-df = add_market_features(data)
+df = add_market_features(data, asset_type=asset_type)
 df = detect_fractal_swings(df, left=PIVOT_WINDOW, right=PIVOT_WINDOW)
 clean_df = df.dropna().reset_index(drop=True)
+zero_volume_pct = (data["Volume"].eq(0).mean() * 100) if "Volume" in data.columns and len(data) else 0.0
+missing_price_values = int(data[["Open", "High", "Low", "Close"]].isna().sum().sum()) if not data.empty else 0
 
 if len(clean_df) < 250:
     st.error("البيانات المتاحة قليلة جداً لهذا الإطار. جرّب فترة أطول أو إطار 1d.")
@@ -949,7 +1017,13 @@ with tab_decision:
 with tab_chart:
     st.subheader("الشارت البنيوي")
 
-    fig = go.Figure()
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.78, 0.22],
+    )
 
     fig.add_trace(
         go.Candlestick(
@@ -963,14 +1037,30 @@ with tab_chart:
             increasing_fillcolor="#26a69a",
             decreasing_line_color="#ef5350",
             decreasing_fillcolor="#ef5350",
-        )
+        ),
+        row=1,
+        col=1,
     )
 
-    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma20"], mode="lines", name="MA 20", line=dict(width=1.4, color="#42a5f5")))
-    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma50"], mode="lines", name="MA 50", line=dict(width=1.4, color="#ffca28")))
-    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma200"], mode="lines", name="MA 200", line=dict(width=1.6, color="#ab47bc")))
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma20"], mode="lines", name="MA 20", line=dict(width=1.4, color="#42a5f5")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma50"], mode="lines", name="MA 50", line=dict(width=1.4, color="#ffca28")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma200"], mode="lines", name="MA 200", line=dict(width=1.6, color="#ab47bc")), row=1, col=1)
 
-    recent_structural_swings = swing_sequence[-24:]
+    recent_structural_swings = swing_sequence[-32:]
+    if len(recent_structural_swings) >= 2:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in recent_structural_swings],
+                y=[s["price"] for s in recent_structural_swings],
+                mode="lines+markers",
+                name="ZigZag بنيوي",
+                line=dict(width=1.6, color="#fdd835"),
+                marker=dict(size=6, color="#fdd835"),
+            ),
+            row=1,
+            col=1,
+        )
+
     swing_high_points = [s for s in recent_structural_swings if s["type"] == "high"]
     swing_low_points = [s for s in recent_structural_swings if s["type"] == "low"]
 
@@ -980,9 +1070,11 @@ with tab_chart:
                 x=[s["date"] for s in swing_high_points],
                 y=[s["price"] for s in swing_high_points],
                 mode="markers",
-                name="قمم بنيوية",
+                name="قمم",
                 marker=dict(symbol="triangle-down", size=10, color="#ff7043"),
-            )
+            ),
+            row=1,
+            col=1,
         )
 
     if swing_low_points:
@@ -991,15 +1083,30 @@ with tab_chart:
                 x=[s["date"] for s in swing_low_points],
                 y=[s["price"] for s in swing_low_points],
                 mode="markers",
-                name="قيعان بنيوية",
+                name="قيعان",
                 marker=dict(symbol="triangle-up", size=10, color="#26c6da"),
-            )
+            ),
+            row=1,
+            col=1,
         )
+
+    volume_color = np.where(clean_df["Close"] >= clean_df["Open"], "#26a69a", "#ef5350")
+    fig.add_trace(
+        go.Bar(
+            x=clean_df["Date"],
+            y=clean_df["Volume"],
+            name="Volume",
+            marker_color=volume_color,
+            opacity=0.45,
+        ),
+        row=2,
+        col=1,
+    )
 
     highs = [s for s in swing_sequence if s["type"] == "high"]
     lows = [s for s in swing_sequence if s["type"] == "low"]
     last_date = clean_df["Date"].iloc[-1]
-    future_date = next_business_date(last_date, HOLD_DAYS)
+    future_date = next_trading_date(last_date, HOLD_DAYS, asset_type)
 
     if highs:
         last_high = highs[-1]
@@ -1009,6 +1116,8 @@ with tab_chart:
             line_color="#ff7043",
             annotation_text="آخر قمة",
             annotation_position="top left",
+            row=1,
+            col=1,
         )
 
     if lows:
@@ -1019,6 +1128,8 @@ with tab_chart:
             line_color="#26c6da",
             annotation_text="آخر قاع",
             annotation_position="bottom left",
+            row=1,
+            col=1,
         )
 
     fig.add_shape(
@@ -1027,7 +1138,9 @@ with tab_chart:
         x1=future_date,
         y0=forward_scenario["range_low"],
         y1=forward_scenario["range_high"],
-        fillcolor="rgba(66, 165, 245, 0.16)",
+        xref="x",
+        yref="y",
+        fillcolor="rgba(66, 165, 245, 0.07)",
         line=dict(width=0),
         layer="below",
     )
@@ -1037,21 +1150,11 @@ with tab_chart:
             x=[last_date, future_date],
             y=[latest_close, forward_scenario["mid"]],
             mode="lines",
-            name="مسار متوقع",
-            line=dict(color="#42a5f5", width=2, dash="dash"),
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=[future_date],
-            y=[forward_scenario["range_high"]],
-            mode="markers+text",
-            name="النطاق المتوقع",
-            text=["نطاق متوقع"],
-            textposition="top center",
-            marker=dict(size=8, color="#42a5f5"),
-        )
+            name="سيناريو",
+            line=dict(color="#42a5f5", width=1.5, dash="dash"),
+        ),
+        row=1,
+        col=1,
     )
 
     if not pd.isna(forward_scenario["invalidation"]):
@@ -1061,10 +1164,12 @@ with tab_chart:
             line_color="#fdd835",
             annotation_text="إلغاء السيناريو",
             annotation_position="bottom right",
+            row=1,
+            col=1,
         )
 
     fig.update_layout(
-        height=760,
+        height=780,
         template="plotly_dark",
         paper_bgcolor="#0b0f19",
         plot_bgcolor="#0b0f19",
@@ -1085,18 +1190,27 @@ with tab_chart:
                 ])
             ),
         ),
+        xaxis2=dict(showgrid=True, gridcolor="rgba(255,255,255,0.04)"),
         yaxis=dict(
             side="right",
             showgrid=True,
             gridcolor="rgba(255,255,255,0.06)",
             fixedrange=False,
         ),
+        yaxis2=dict(
+            side="right",
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.04)",
+            title="Volume",
+        ),
+        bargap=0,
     )
 
     st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displaylogo": False})
     st.caption(
-        f"التوقع ليس توصية تداول؛ هو سيناريو بنيوي آلي لمدة {HOLD_DAYS} شمعة حسب الدورة، القمم/القيعان، الاختراق الكاذب، وATR."
+        f"السيناريو ليس تنبؤاً معايراً ولا توصية. هو إسقاط بنيوي تقريبي لمدة {HOLD_DAYS} شمعة اعتماداً على الدورة، القمم/القيعان، الاختراق الكاذب، وATR."
     )
+
 
 with tab_test:
     st.subheader("Fractal Decision Backtest")
@@ -1149,6 +1263,16 @@ with tab_test:
         st.warning(backtest_verdict["text"])
 
     with st.expander("تفاصيل إضافية"):
+        st.write("جودة البيانات")
+        st.write({
+            "start": str(clean_df["Date"].iloc[0].date()),
+            "end": str(clean_df["Date"].iloc[-1].date()),
+            "rows": int(len(clean_df)),
+            "zero_volume_pct": round(float(zero_volume_pct), 2),
+            "missing_price_values": int(missing_price_values),
+            "asset_type": asset_type,
+        })
+
         st.write("كامل البيانات")
         st.json(fractal_all_stats)
 
