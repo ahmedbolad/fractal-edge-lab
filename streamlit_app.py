@@ -79,6 +79,15 @@ EARLY_ENTRY_ZONE_PCT = 0.02
 LOW_EARLY_ENTRY_RISK_PCT = 5.0
 MEDIUM_EARLY_ENTRY_RISK_PCT = 10.0
 HIGH_EARLY_ENTRY_RISK_PCT = 20.0
+
+# صيد الانفجارات للكريبتو يحتاج فلاتر أوسع من الأسهم الصغيرة،
+# لأن الكريبتو يتحرك 24/7 وغالباً يبقى متقدماً داخل الدورة قبل التسارع.
+CRYPTO_MAX_CYCLE_POSITION = 80.0
+ASSET_MAX_CYCLE_POSITION = 65.0
+CRYPTO_MAX_DISTANCE_TO_TRIGGER_PCT = 25.0
+ASSET_MAX_DISTANCE_TO_TRIGGER_PCT = 15.0
+CRYPTO_MIN_COMPRESSION_SCORE = 2
+ASSET_MIN_COMPRESSION_SCORE = 3
 EXPLOSION_UNIVERSE = [
     # أمثلة أسهم صغيرة/مضاربية عالية المخاطرة؛ بعضها قد لا يعطي بيانات دائماً من Yahoo.
     ("BNAI", "Brand Engagement Network", "سهم صغير"),
@@ -1016,6 +1025,10 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
     المنطق هنا يركز على الدخول المبكر محدود الخطر، وليس انتظار الاختراق المتأخر بعد أن يطير السعر.
     """
     candidate_asset_type = infer_asset_type(ticker)
+    is_crypto_candidate = candidate_asset_type == "crypto" or kind == "كريبتو"
+    max_cycle_position_allowed = CRYPTO_MAX_CYCLE_POSITION if is_crypto_candidate else ASSET_MAX_CYCLE_POSITION
+    max_distance_to_trigger_allowed = CRYPTO_MAX_DISTANCE_TO_TRIGGER_PCT if is_crypto_candidate else ASSET_MAX_DISTANCE_TO_TRIGGER_PCT
+    min_compression_score_required = CRYPTO_MIN_COMPRESSION_SCORE if is_crypto_candidate else ASSET_MIN_COMPRESSION_SCORE
     data_candidate = load_data(ticker, PERIOD, INTERVAL)
 
     if data_candidate.empty or len(data_candidate) < 180:
@@ -1062,11 +1075,12 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
 
     if structure != "بنية صاعدة":
         return None
-    if cycle_quality not in ["قوية", "متوسطة"]:
+    allowed_cycle_qualities = ["قوية", "متوسطة", "ضعيفة"] if is_crypto_candidate else ["قوية", "متوسطة"]
+    if cycle_quality not in allowed_cycle_qualities:
         return None
     if breakout_risk == "مرتفع":
         return None
-    if not pd.isna(cycle_position) and float(cycle_position) > 65:
+    if not pd.isna(cycle_position) and float(cycle_position) > max_cycle_position_allowed:
         return None
 
     trigger_low = candidate_scenario.get("entry_low", np.nan)
@@ -1117,7 +1131,7 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
 
     # لا نسمح بالدخول المبكر إذا كان بعيداً جداً عن منطقة التفعيل، لأن الفكرة تصبح مبكرة أكثر من اللازم.
     distance_to_trigger_pct = max(0.0, (trigger_high / early_mid - 1) * 100)
-    if distance_to_trigger_pct > 15:
+    if distance_to_trigger_pct > max_distance_to_trigger_allowed:
         return None
 
     # إلغاء الفكرة: بنيوي وتلقائي. لا نقص الفرصة بسقف خطر ثابت؛ نعرض الخطر ونصنفه بوضوح.
@@ -1169,7 +1183,7 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
     if last_close_candidate <= 20 or kind == "كريبتو":
         compression_score += 1
 
-    if compression_score < 3:
+    if compression_score < min_compression_score_required:
         return None
 
     if len(candidate_swings) >= 2:
@@ -1225,6 +1239,8 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
         reasons.append("خطر الإلغاء عالي")
     else:
         reasons.append("خطر الإلغاء عالي جداً")
+    if is_crypto_candidate:
+        reasons.append("فلتر كريبتو أوسع بدون حذف بسبب التذبذب")
     if distance_to_52w_high_pct >= 50:
         reasons.append("مساحة صعود كبيرة")
     if distance_to_20d_high_pct <= 8:
@@ -1242,6 +1258,7 @@ def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pc
         "الرمز": ticker,
         "الاسم": name,
         "النوع": kind,
+        "قواعد الفلتر": "كريبتو مرن" if is_crypto_candidate else "أصول عادية",
         "الحالة": trade_status,
         "تقييم الدخول": early_status,
         "السعر الحالي": f"{last_close_candidate:.2f}",
@@ -1976,6 +1993,7 @@ with tab_opportunities:
             "الرمز",
             "الاسم",
             "النوع",
+            "قواعد الفلتر",
             "الحالة",
             "تقييم الدخول",
             "السعر الحالي",
