@@ -1038,27 +1038,62 @@ with tab_decision:
 with tab_chart:
     st.subheader("الشارت البنيوي")
 
-    # هدف هذا الشارت: التركيز على آخر منطقة فقط مثل TradingView، بدون زحمة تاريخية.
+    # الشارت هنا يركز على آخر منطقة فعلية: دورة حالية + دورة توقع + إشارات دخول/خروج مؤكدة.
     display_bars = min(len(clean_df), 260)
     focus_start_date = clean_df["Date"].iloc[-display_bars]
+    visible_df = clean_df.tail(display_bars).copy()
 
     last_date = clean_df["Date"].iloc[-1]
     future_date = next_trading_date(last_date, HOLD_DAYS, asset_type)
-    range_end_date = next_trading_date(future_date, 5, asset_type)
+    range_end_date = next_trading_date(future_date, 8, asset_type)
 
-    # نقاط الدورة الحالية: آخر نقطتين مؤكدتين من ZigZag.
     cycle_start = swing_sequence[-2] if len(swing_sequence) >= 2 else None
     cycle_end = swing_sequence[-1] if len(swing_sequence) >= 1 else None
+    cycle_start_date = cycle_start["date"] if cycle_start else visible_df["Date"].iloc[0]
+    cycle_end_date = cycle_end["date"] if cycle_end else last_date
+
+    visible_low = float(visible_df["Low"].min())
+    visible_high = float(visible_df["High"].max())
+    price_pad = max((visible_high - visible_low) * 0.08, float(latest["atr14"]) if not pd.isna(latest["atr14"]) else latest_close * 0.02)
+    y_min = visible_low - price_pad
+    y_max = visible_high + price_pad
 
     fig = make_subplots(
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[0.80, 0.20],
+        vertical_spacing=0.015,
+        row_heights=[0.78, 0.22],
     )
 
-    # شموع السعر
+    # تظليل الدورة الحالية قبل الشموع، حتى تكون الخلفية واضحة وغير مزعجة.
+    fig.add_shape(
+        type="rect",
+        x0=max(pd.to_datetime(cycle_start_date), pd.to_datetime(focus_start_date)),
+        x1=min(pd.to_datetime(last_date), pd.to_datetime(range_end_date)),
+        y0=y_min,
+        y1=y_max,
+        xref="x",
+        yref="y",
+        fillcolor="rgba(255,255,255,0.035)",
+        line=dict(color="rgba(255,255,255,0.11)", width=1),
+        layer="below",
+    )
+
+    # دورة التوقع القادمة: واضحة على يمين آخر شمعة، لكنها ليست وعداً سعرياً.
+    fig.add_shape(
+        type="rect",
+        x0=last_date,
+        x1=future_date,
+        y0=forward_scenario["range_low"],
+        y1=forward_scenario["range_high"],
+        xref="x",
+        yref="y",
+        fillcolor="rgba(47,128,237,0.11)",
+        line=dict(color="rgba(47,128,237,0.45)", width=1, dash="dot"),
+        layer="below",
+    )
+
     fig.add_trace(
         go.Candlestick(
             x=clean_df["Date"],
@@ -1077,12 +1112,11 @@ with tab_chart:
         col=1,
     )
 
-    # متوسطات بسيطة وواضحة
     fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma20"], mode="lines", name="MA 20", line=dict(width=1.15, color="#2f80ed")), row=1, col=1)
     fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma50"], mode="lines", name="MA 50", line=dict(width=1.15, color="#f2c94c")), row=1, col=1)
     fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma200"], mode="lines", name="MA 200", line=dict(width=1.25, color="#bb6bd9")), row=1, col=1)
 
-    # ZigZag للمنطقة الأخيرة فقط حتى لا يزحم الشارت.
+    # ZigZag بنيوي للمنطقة الظاهرة فقط.
     recent_structural_swings = [s for s in swing_sequence if pd.to_datetime(s["date"]) >= pd.to_datetime(focus_start_date)]
     if len(recent_structural_swings) < 2:
         recent_structural_swings = swing_sequence[-18:]
@@ -1094,7 +1128,7 @@ with tab_chart:
                 y=[s["price"] for s in recent_structural_swings],
                 mode="lines+markers",
                 name="ZigZag",
-                line=dict(width=1.7, color="#f2c94c"),
+                line=dict(width=1.8, color="#f2c94c"),
                 marker=dict(size=5, color="#f2c94c"),
                 hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}<extra>ZigZag</extra>",
             ),
@@ -1102,7 +1136,7 @@ with tab_chart:
             col=1,
         )
 
-    # حجم التداول. للأصول التي لا تملك Volume حقيقي يبقى الرسم خفيفاً ولا يؤثر على القرار.
+    # حجم التداول.
     volume_color = np.where(clean_df["Close"] >= clean_df["Open"], "rgba(38,166,154,0.45)", "rgba(239,83,80,0.45)")
     fig.add_trace(
         go.Bar(
@@ -1120,7 +1154,6 @@ with tab_chart:
     highs = [s for s in swing_sequence if s["type"] == "high"]
     lows = [s for s in swing_sequence if s["type"] == "low"]
 
-    # خطوط آخر قمة وآخر قاع: مهمة للقرار، بدون مثلثات كثيرة.
     if highs:
         last_high = highs[-1]
         fig.add_hline(
@@ -1145,53 +1178,89 @@ with tab_chart:
             col=1,
         )
 
-    # تحديد الدورة الحالية على الشارت: بداية الدورة ونقطتها المؤكدة الأخيرة.
-    if cycle_start is not None:
-        fig.add_vline(
-            x=cycle_start["date"],
-            line_dash="dash",
-            line_color="rgba(255,255,255,0.45)",
-            annotation_text="بداية الدورة",
-            annotation_position="top left",
-            row=1,
-            col=1,
-        )
+    # بداية ونهاية الدورة الحالية.
+    fig.add_vline(
+        x=cycle_start_date,
+        line_dash="dash",
+        line_color="rgba(255,255,255,0.55)",
+        annotation_text="بداية الدورة",
+        annotation_position="top left",
+        row=1,
+        col=1,
+    )
 
-    if cycle_end is not None:
-        fig.add_vline(
-            x=cycle_end["date"],
-            line_dash="dash",
-            line_color="rgba(255,255,255,0.30)",
-            annotation_text="آخر تأكيد",
-            annotation_position="top right",
-            row=1,
-            col=1,
-        )
+    fig.add_vline(
+        x=cycle_end_date,
+        line_dash="dash",
+        line_color="rgba(255,255,255,0.34)",
+        annotation_text="آخر تأكيد",
+        annotation_position="top right",
+        row=1,
+        col=1,
+    )
 
-    # منطقة الدخول المثالية: تظهر أفقياً حول آخر منطقة، وتمتد قليلاً للمستقبل.
+    fig.add_vline(
+        x=future_date,
+        line_dash="dot",
+        line_color="rgba(47,128,237,0.65)",
+        annotation_text="نهاية دورة التوقع",
+        annotation_position="top right",
+        row=1,
+        col=1,
+    )
+
+    fig.add_annotation(
+        x=last_date,
+        y=y_max,
+        text="الدورة الحالية",
+        showarrow=False,
+        font=dict(color="#d1d4dc", size=11),
+        bgcolor="rgba(11,15,25,0.72)",
+        bordercolor="rgba(255,255,255,0.18)",
+        xanchor="right",
+        yanchor="top",
+        row=1,
+        col=1,
+    )
+
+    fig.add_annotation(
+        x=future_date,
+        y=forward_scenario["range_high"],
+        text="دورة التوقع",
+        showarrow=False,
+        font=dict(color="#9ec5ff", size=11),
+        bgcolor="rgba(11,15,25,0.78)",
+        bordercolor="rgba(47,128,237,0.45)",
+        xanchor="right",
+        yanchor="bottom",
+        row=1,
+        col=1,
+    )
+
+    # منطقة الدخول المثالية على آخر منطقة فقط.
     if not pd.isna(forward_scenario.get("entry_low", np.nan)) and not pd.isna(forward_scenario.get("entry_high", np.nan)):
         entry_low = float(forward_scenario["entry_low"])
         entry_high = float(forward_scenario["entry_high"])
-        entry_x0 = clean_df["Date"].iloc[-min(len(clean_df), 90)]
+        entry_x0 = clean_df["Date"].iloc[-min(len(clean_df), 70)]
         fig.add_shape(
             type="rect",
             x0=entry_x0,
-            x1=range_end_date,
+            x1=future_date,
             y0=entry_low,
             y1=entry_high,
             xref="x",
             yref="y",
-            fillcolor="rgba(38,166,154,0.10)",
-            line=dict(color="rgba(38,166,154,0.70)", width=1),
+            fillcolor="rgba(38,166,154,0.13)",
+            line=dict(color="rgba(38,166,154,0.80)", width=1),
             layer="below",
         )
         fig.add_annotation(
-            x=range_end_date,
+            x=future_date,
             y=(entry_low + entry_high) / 2,
             text="منطقة دخول مثالية",
             showarrow=False,
             font=dict(color="#80cbc4", size=11),
-            bgcolor="rgba(11,15,25,0.80)",
+            bgcolor="rgba(11,15,25,0.82)",
             bordercolor="rgba(38,166,154,0.65)",
             xanchor="right",
             yanchor="middle",
@@ -1199,46 +1268,17 @@ with tab_chart:
             col=1,
         )
 
-    # التوقع يبقى موجوداً، لكن خفيف ومحصور يمين آخر شمعة.
-    fig.add_shape(
-        type="rect",
-        x0=last_date,
-        x1=future_date,
-        y0=forward_scenario["range_low"],
-        y1=forward_scenario["range_high"],
-        xref="x",
-        yref="y",
-        fillcolor="rgba(47,128,237,0.075)",
-        line=dict(color="rgba(47,128,237,0.25)", width=1),
-        layer="below",
-    )
-
+    # خط السيناريو داخل دورة التوقع.
     fig.add_trace(
         go.Scatter(
             x=[last_date, future_date],
             y=[latest_close, forward_scenario["mid"]],
             mode="lines+markers",
             name="سيناريو بنيوي",
-            line=dict(color="#2f80ed", width=1.4, dash="dot"),
+            line=dict(color="#2f80ed", width=1.5, dash="dot"),
             marker=dict(size=5, color="#2f80ed"),
             hovertemplate="سيناريو بنيوي<br>%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
         ),
-        row=1,
-        col=1,
-    )
-
-    fig.add_annotation(
-        x=future_date,
-        y=forward_scenario["mid"],
-        text="سيناريو بنيوي",
-        showarrow=True,
-        arrowhead=2,
-        arrowsize=0.7,
-        arrowwidth=1,
-        arrowcolor="#2f80ed",
-        font=dict(color="#9ec5ff", size=11),
-        bgcolor="rgba(11,15,25,0.75)",
-        bordercolor="rgba(47,128,237,0.4)",
         row=1,
         col=1,
     )
@@ -1254,19 +1294,77 @@ with tab_chart:
             col=1,
         )
 
+    # إشارات الدخول والخروج المؤكدة من الاختبار: مثلث أخضر للدخول وسهم/مثلث أحمر للخروج.
+    if not fractal_all_trades.empty:
+        visible_start = pd.to_datetime(focus_start_date)
+        trade_df = fractal_all_trades.copy()
+        trade_df["entry_date"] = pd.to_datetime(trade_df["entry_date"])
+        trade_df["exit_date"] = pd.to_datetime(trade_df["exit_date"])
+        trade_df = trade_df[(trade_df["entry_date"] >= visible_start) | (trade_df["exit_date"] >= visible_start)]
+
+        if not trade_df.empty:
+            price_lookup = clean_df.set_index(pd.to_datetime(clean_df["Date"]))
+
+            entry_x, entry_y, entry_text = [], [], []
+            exit_x, exit_y, exit_text = [], [], []
+
+            for _, tr in trade_df.iterrows():
+                ed = pd.to_datetime(tr["entry_date"])
+                xd = pd.to_datetime(tr["exit_date"])
+                if ed in price_lookup.index:
+                    row = price_lookup.loc[ed]
+                    entry_x.append(ed)
+                    entry_y.append(float(row["Low"]) - price_pad * 0.18)
+                    entry_text.append(f"دخول مؤكد<br>{ed.date()}<br>{float(tr['entry_price']):.2f}")
+                if xd in price_lookup.index:
+                    row = price_lookup.loc[xd]
+                    exit_x.append(xd)
+                    exit_y.append(float(row["High"]) + price_pad * 0.18)
+                    exit_text.append(f"خروج<br>{xd.date()}<br>{float(tr['exit_price']):.2f}")
+
+            if entry_x:
+                fig.add_trace(
+                    go.Scatter(
+                        x=entry_x,
+                        y=entry_y,
+                        mode="markers",
+                        name="دخول مؤكد",
+                        marker=dict(symbol="triangle-up", size=14, color="#00e676", line=dict(color="#0b0f19", width=1)),
+                        text=entry_text,
+                        hovertemplate="%{text}<extra></extra>",
+                    ),
+                    row=1,
+                    col=1,
+                )
+
+            if exit_x:
+                fig.add_trace(
+                    go.Scatter(
+                        x=exit_x,
+                        y=exit_y,
+                        mode="markers",
+                        name="خروج",
+                        marker=dict(symbol="triangle-down", size=15, color="#ff5252", line=dict(color="#0b0f19", width=1)),
+                        text=exit_text,
+                        hovertemplate="%{text}<extra></extra>",
+                    ),
+                    row=1,
+                    col=1,
+                )
+
     rangebreaks = []
     if asset_type == "stock":
         rangebreaks = [dict(bounds=["sat", "mon"])]
 
     fig.update_layout(
-        height=760,
+        height=780,
         template="plotly_dark",
         paper_bgcolor="#0b0f19",
         plot_bgcolor="#0b0f19",
         font=dict(color="#d1d4dc", size=12),
         hovermode="x unified",
         dragmode="pan",
-        margin=dict(l=10, r=58, t=38, b=35),
+        margin=dict(l=8, r=62, t=42, b=36),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -1288,6 +1386,8 @@ with tab_chart:
             spikethickness=1,
             rangebreaks=rangebreaks,
             rangeselector=dict(
+                x=0,
+                y=1.08,
                 bgcolor="rgba(255,255,255,0.08)",
                 activecolor="rgba(47,128,237,0.55)",
                 buttons=list([
@@ -1307,6 +1407,7 @@ with tab_chart:
             rangebreaks=rangebreaks,
         ),
         yaxis=dict(
+            range=[y_min, y_max],
             side="right",
             showgrid=True,
             gridcolor="rgba(255,255,255,0.055)",
@@ -1322,6 +1423,7 @@ with tab_chart:
             showticklabels=True,
         ),
         bargap=0,
+        uirevision=f"{symbol}-{asset_type}",
     )
 
     fig.update_xaxes(showline=True, linewidth=1, linecolor="rgba(255,255,255,0.12)")
@@ -1343,8 +1445,8 @@ with tab_chart:
 
     st.plotly_chart(fig, use_container_width=True, config=chart_config)
     st.caption(
-        "طريقة الاستخدام: عجلة الماوس للتكبير والتصغير، اسحب الشارت يمين/يسار للتحريك، ودبل كليك للرجوع. "
-        f"التوقع سيناريو بنيوي تقريبي لمدة {HOLD_DAYS} شمعة وليس توصية أو ضمان."
+        "الشارت يعرض الدورة الحالية، دورة التوقع، منطقة الدخول المثالية، ومثلثات الدخول/الخروج المؤكدة من الاختبار. "
+        "استخدم عجلة الماوس للتكبير، واسحب يمين/يسار للتحريك. التوقع سيناريو بنيوي وليس ضماناً."
     )
 
 
