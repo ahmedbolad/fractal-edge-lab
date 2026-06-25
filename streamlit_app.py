@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 st.set_page_config(
     page_title="Fractal Edge Lab",
@@ -1887,11 +1888,22 @@ with tab_opportunities:
     st.subheader("صيد الانفجارات السعرية")
     st.caption("قائمة مستقلة تبحث عن أسهم/كريبتو عندها سيناريو انفجار سعري محتمل يبدأ من 50% ومفتوح للأعلى. ليست وعداً بالصعود ولا توصية شراء.")
 
-    st.info("الفلتر يبحث عن نمط شبيه بحالات مثل BNAI قبل الحركة: سعر مضغوط، بداية دورة، تحسن حجم، اقتراب من اختراق، ومساحة صعود كبيرة.")
+    st.caption("طريقة التحديث: عند الضغط على زر الفحص يتم تحديث البيانات وإعادة بناء القائمة.")
 
-    if st.button("ابدأ صيد الانفجارات الآن", use_container_width=True):
-        with st.spinner("جاري فحص المرشحين عاليي الحركة... قد يستغرق قليلاً"):
+    last_update = st.session_state.get("explosion_hunter_last_update")
+    if last_update:
+        st.caption(f"آخر فحص: {last_update}")
+
+    if st.button("تحديث وفحص الآن", use_container_width=True):
+        with st.spinner("جاري تحديث البيانات وفحص المرشحين... قد يستغرق قليلاً"):
+            try:
+                load_data.clear()
+                scan_explosion_hunter.clear()
+                scan_high_upside_opportunities.clear()
+            except Exception:
+                pass
             st.session_state["explosion_hunter"] = scan_explosion_hunter(EXPLOSION_MIN_UPSIDE_PCT)
+            st.session_state["explosion_hunter_last_update"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
     explosion_df = st.session_state.get("explosion_hunter", pd.DataFrame())
 
