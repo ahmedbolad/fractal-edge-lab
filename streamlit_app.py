@@ -71,6 +71,58 @@ SYMBOL_ALIASES = {
     "amd": ("AMD", "AMD"),
 }
 
+# قائمة بحث مقفلة لصيد الانفجارات السعرية.
+# الهدف ليس وعداً بالصعود، بل فلترة أصول صغيرة/متحركة عندها سيناريو بنيوي لصعود مرتفع يبدأ من 50% ومفتوح للأعلى.
+EXPLOSION_MIN_UPSIDE_PCT = 50.0
+EXPLOSION_UNIVERSE = [
+    # أمثلة أسهم صغيرة/مضاربية عالية المخاطرة؛ بعضها قد لا يعطي بيانات دائماً من Yahoo.
+    ("BNAI", "Brand Engagement Network", "سهم صغير"),
+    ("MLGO", "MicroAlgo", "سهم صغير"),
+    ("HOLO", "MicroCloud Hologram", "سهم صغير"),
+    ("LIDR", "AEye", "سهم صغير"),
+    ("KULR", "KULR Technology", "سهم صغير"),
+    ("BBAI", "BigBear.ai", "AI Small Cap"),
+    ("SOUN", "SoundHound AI", "AI Small Cap"),
+    ("RGTI", "Rigetti Computing", "Quantum"),
+    ("QBTS", "D-Wave Quantum", "Quantum"),
+    ("QUBT", "Quantum Computing", "Quantum"),
+    ("IONQ", "IonQ", "Quantum"),
+    ("LAES", "SEALSQ", "سهم صغير"),
+    ("HUMA", "Humacyte", "Biotech"),
+    ("ACHR", "Archer Aviation", "Growth"),
+    ("JOBY", "Joby Aviation", "Growth"),
+    ("LUNR", "Intuitive Machines", "Space"),
+    ("RKLB", "Rocket Lab", "Space"),
+    ("ASTS", "AST SpaceMobile", "Space"),
+    ("OPEN", "Opendoor", "High Beta"),
+    ("SOFI", "SoFi", "High Beta"),
+    ("RIVN", "Rivian", "High Beta"),
+    ("LCID", "Lucid", "High Beta"),
+    ("PLTR", "Palantir", "AI"),
+    ("MARA", "MARA Holdings", "Bitcoin Miner"),
+    ("RIOT", "Riot Platforms", "Bitcoin Miner"),
+    ("CIFR", "Cipher Mining", "Bitcoin Miner"),
+    ("WULF", "TeraWulf", "Bitcoin Miner"),
+    ("BITF", "Bitfarms", "Bitcoin Miner"),
+    ("HIVE", "HIVE Digital", "Bitcoin Miner"),
+    ("COIN", "Coinbase", "Crypto Equity"),
+    ("MSTR", "MicroStrategy", "Bitcoin Proxy"),
+    # كريبتو عالي الحركة
+    ("BTC-USD", "Bitcoin", "كريبتو"),
+    ("ETH-USD", "Ethereum", "كريبتو"),
+    ("SOL-USD", "Solana", "كريبتو"),
+    ("SUI-USD", "Sui", "كريبتو"),
+    ("AVAX-USD", "Avalanche", "كريبتو"),
+    ("LINK-USD", "Chainlink", "كريبتو"),
+    ("DOGE-USD", "Dogecoin", "كريبتو"),
+    ("ADA-USD", "Cardano", "كريبتو"),
+    ("XRP-USD", "XRP", "كريبتو"),
+]
+
+# إبقاء الاسم القديم كـ alias حتى لا ينكسر أي جزء قديم في الصفحة.
+HIGH_UPSIDE_MIN_PCT = EXPLOSION_MIN_UPSIDE_PCT
+OPPORTUNITY_UNIVERSE = EXPLOSION_UNIVERSE
+
 
 def normalize_symbol_text(value: str) -> str:
     cleaned = str(value).strip().lower()
@@ -942,6 +994,238 @@ def make_backtest_verdict(stats: dict) -> dict:
     }
 
 
+def safe_ratio(numerator: float, denominator: float, fallback: float = np.nan) -> float:
+    try:
+        numerator = float(numerator)
+        denominator = float(denominator)
+        if denominator == 0 or pd.isna(denominator) or pd.isna(numerator):
+            return fallback
+        return numerator / denominator
+    except Exception:
+        return fallback
+
+
+def analyze_explosion_candidate(ticker: str, name: str, kind: str, min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT):
+    """
+    صيد انفجار سعري محتمل مثل أسهم BNAI قبل القفزة.
+    لا يقول "سوف يصعد"، بل يفلتر مرشحاً إذا توفرت: ضغط/تجميع، بداية دورة، حجم يتحسن، مساحة صعود مفتوحة فوق 50%.
+    """
+    candidate_asset_type = infer_asset_type(ticker)
+    data_candidate = load_data(ticker, PERIOD, INTERVAL)
+
+    if data_candidate.empty or len(data_candidate) < 180:
+        return None
+
+    df_candidate = add_market_features(data_candidate, asset_type=candidate_asset_type)
+    df_candidate = detect_fractal_swings(df_candidate, left=PIVOT_WINDOW, right=PIVOT_WINDOW)
+    clean_candidate = df_candidate.dropna().reset_index(drop=True)
+
+    if len(clean_candidate) < 160:
+        return None
+
+    raw_candidate_swings = build_swing_sequence(clean_candidate, confirmation_delay=PIVOT_WINDOW)
+    candidate_swings = filter_swings_by_atr(raw_candidate_swings, clean_candidate, min_atr_multiple=MIN_SWING_ATR)
+
+    if len(candidate_swings) < 4:
+        return None
+
+    candidate_index = len(clean_candidate) - 1
+    candidate_structure = analyze_structure_from_swings(clean_candidate, candidate_swings, current_index=candidate_index)
+    candidate_cycle = compute_cycle_quality_at_index(clean_candidate, candidate_swings, current_index=candidate_index)
+    candidate_false_breakout = detect_false_breakout(clean_candidate, candidate_swings)
+    candidate_scenario = build_forward_scenario(
+        clean_candidate,
+        candidate_swings,
+        candidate_structure,
+        candidate_cycle,
+        candidate_false_breakout,
+        horizon=HOLD_DAYS
+    )
+
+    latest_candidate = clean_candidate.iloc[-1]
+    last_close_candidate = float(latest_candidate["Close"])
+    if last_close_candidate <= 0:
+        return None
+
+    atr_candidate = float(latest_candidate["atr14"]) if not pd.isna(latest_candidate["atr14"]) and latest_candidate["atr14"] > 0 else last_close_candidate * 0.04
+
+    structure = candidate_structure.get("structure_trend", "")
+    cycle_quality = candidate_cycle.get("cycle_quality", "")
+    cycle_position = candidate_cycle.get("cycle_position", np.nan)
+    cycle_phase = candidate_cycle.get("cycle_phase", "غير متاح")
+    breakout_risk = candidate_false_breakout.get("risk", "غير متاح")
+
+    # لا نريد مرشحين مكسورين بنيوياً أو في نهاية دورة واضحة.
+    if structure != "بنية صاعدة":
+        return None
+    if cycle_quality not in ["قوية", "متوسطة"]:
+        return None
+    if breakout_risk == "مرتفع":
+        return None
+    if not pd.isna(cycle_position) and float(cycle_position) > 65:
+        return None
+
+    entry_low = candidate_scenario.get("entry_low", np.nan)
+    entry_high = candidate_scenario.get("entry_high", np.nan)
+    if pd.isna(entry_low) or pd.isna(entry_high):
+        return None
+
+    entry_low = float(entry_low)
+    entry_high = float(entry_high)
+    entry_low, entry_high = clamp_entry_zone_around_midpoint(entry_low, entry_high, max_pct=0.02)
+    entry_mid = (entry_low + entry_high) / 2
+    if entry_mid <= 0:
+        return None
+
+    lookback_252 = clean_candidate.tail(min(252, len(clean_candidate)))
+    lookback_126 = clean_candidate.tail(min(126, len(clean_candidate)))
+    lookback_60 = clean_candidate.tail(min(60, len(clean_candidate)))
+    lookback_20 = clean_candidate.tail(min(20, len(clean_candidate)))
+
+    high_52w = float(lookback_252["High"].max())
+    high_6m = float(lookback_126["High"].max())
+    low_6m = float(lookback_126["Low"].min())
+    recent_high_20 = float(lookback_20["High"].max())
+
+    # مساحة الصعود المفتوحة: أولاً إلى قمة سنة/ستة أشهر، ثم هدف بنيوي بدورة ممتدة.
+    highs = [s for s in candidate_swings if s["type"] == "high"]
+    lows = [s for s in candidate_swings if s["type"] == "low"]
+    if not highs or not lows:
+        return None
+
+    last_high = float(highs[-1]["price"])
+    last_low = float(lows[-1]["price"])
+    cycle_amplitude = max(abs(last_high - last_low), atr_candidate * 5)
+
+    historical_target = max(high_52w, high_6m, last_high)
+    structural_target = max(historical_target, last_close_candidate + cycle_amplitude * 2.0)
+
+    # للأسهم الصغيرة جداً، إذا كان السعر تحت القمم السابقة بكثير، نسمح بهدف مفتوح أعلى من القمة السابقة.
+    if kind != "كريبتو" and last_close_candidate <= 15:
+        structural_target = max(structural_target, last_close_candidate + cycle_amplitude * 3.0)
+
+    upside_pct = (structural_target / entry_mid - 1) * 100
+    if upside_pct < min_upside_pct:
+        return None
+
+    # إشارات ما قبل الانفجار: ضغط/تجميع، اقتراب من اختراق، تحسن حجم، توسع تذبذب.
+    range_6m_pct = safe_ratio(high_6m - low_6m, max(low_6m, 0.01), 0.0) * 100
+    distance_to_20d_high_pct = (recent_high_20 / last_close_candidate - 1) * 100
+    distance_to_52w_high_pct = (high_52w / last_close_candidate - 1) * 100
+
+    vol_now = float(lookback_20["Volume"].tail(5).mean()) if "Volume" in lookback_20.columns else 0.0
+    vol_base = float(lookback_60["Volume"].head(max(5, len(lookback_60) - 20)).mean()) if "Volume" in lookback_60.columns and len(lookback_60) > 25 else 0.0
+    volume_ratio = safe_ratio(vol_now, vol_base, 0.0)
+
+    atr_pct_now = safe_ratio(atr_candidate, last_close_candidate, 0.0) * 100
+    atr_pct_60 = float((lookback_60["atr14"] / lookback_60["Close"]).replace([np.inf, -np.inf], np.nan).dropna().median() * 100) if "atr14" in lookback_60.columns else atr_pct_now
+    volatility_expansion = safe_ratio(atr_pct_now, atr_pct_60, 1.0)
+
+    compression_score = 0
+    if range_6m_pct < 120:
+        compression_score += 1
+    if distance_to_20d_high_pct <= 8:
+        compression_score += 1
+    if distance_to_52w_high_pct >= 50:
+        compression_score += 1
+    if volume_ratio >= 1.2 or kind == "كريبتو":
+        compression_score += 1
+    if volatility_expansion >= 1.05:
+        compression_score += 1
+    if last_close_candidate <= 20 or kind == "كريبتو":
+        compression_score += 1
+
+    if compression_score < 3:
+        return None
+
+    if len(candidate_swings) >= 2:
+        try:
+            cycle_bars = int(abs(candidate_swings[-1]["index"] - candidate_swings[-2]["index"]))
+        except Exception:
+            cycle_bars = HOLD_DAYS * 2
+    else:
+        cycle_bars = HOLD_DAYS * 2
+
+    horizon_bars = int(np.clip(cycle_bars * 1.6, 20, 160))
+    entry_date = next_trading_date(clean_candidate["Date"].iloc[-1], max(2, horizon_bars // 5), candidate_asset_type)
+    end_date = next_trading_date(clean_candidate["Date"].iloc[-1], horizon_bars, candidate_asset_type)
+
+    invalidation = candidate_scenario.get("invalidation", np.nan)
+    if pd.isna(invalidation):
+        invalidation = max(0.01, entry_low - 1.3 * atr_candidate)
+    invalidation = float(invalidation)
+
+    risk_pct = max(0.0, (entry_mid / invalidation - 1) * 100) if invalidation > 0 and invalidation < entry_mid else np.nan
+    reward_risk_score = upside_pct / max(risk_pct, 3.0) if not pd.isna(risk_pct) else upside_pct / 8
+
+    explosion_score = (
+        compression_score * 18
+        + min(upside_pct, 400) * 0.35
+        + min(max(volume_ratio, 0), 5) * 8
+        + min(max(volatility_expansion, 0), 4) * 6
+        + min(reward_risk_score, 50)
+    )
+
+    reasons = []
+    if distance_to_52w_high_pct >= 50:
+        reasons.append("مساحة صعود كبيرة مقابل القمم السابقة")
+    if distance_to_20d_high_pct <= 8:
+        reasons.append("قريب من اختراق قصير")
+    if volume_ratio >= 1.2:
+        reasons.append("تحسن حجم التداول")
+    if volatility_expansion >= 1.05:
+        reasons.append("بداية توسع في الحركة")
+    if cycle_phase in ["بداية دورة", "منتصف دورة"]:
+        reasons.append("الدورة ليست متأخرة")
+    if not reasons:
+        reasons.append("تجميع بنيوي مع صعود محتمل فوق 50%")
+
+    return {
+        "الرمز": ticker,
+        "الاسم": name,
+        "النوع": kind,
+        "نسبة الصعود المفتوحة": f"{upside_pct:.1f}%+",
+        "منطقة الدخول": f"{entry_low:.2f} - {entry_high:.2f}",
+        "هدف بنيوي مفتوح": f"{structural_target:.2f}",
+        "إلغاء السيناريو": f"{invalidation:.2f}",
+        "نافذة المراقبة": f"{entry_date.date()} إلى {end_date.date()}",
+        "مرحلة الدورة": cycle_phase,
+        "خطر فشل الاختراق": breakout_risk,
+        "سبب الظهور": " + ".join(reasons[:3]),
+        "explosion_score": float(explosion_score),
+        "upside_numeric": float(upside_pct),
+    }
+
+
+# إبقاء اسم الدالة القديم كـ wrapper حتى لا ينكسر أي استدعاء قديم.
+def analyze_high_upside_candidate(ticker: str, name: str, kind: str, min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT):
+    return analyze_explosion_candidate(ticker, name, kind, min_upside_pct=min_upside_pct)
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 30)
+def scan_explosion_hunter(min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT) -> pd.DataFrame:
+    rows = []
+    for ticker, name, kind in EXPLOSION_UNIVERSE:
+        try:
+            result = analyze_explosion_candidate(ticker, name, kind, min_upside_pct=min_upside_pct)
+            if result is not None:
+                rows.append(result)
+        except Exception:
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(rows)
+    result_df = result_df.sort_values(["explosion_score", "upside_numeric"], ascending=[False, False]).reset_index(drop=True)
+    return result_df
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 30)
+def scan_high_upside_opportunities(min_upside_pct: float = EXPLOSION_MIN_UPSIDE_PCT) -> pd.DataFrame:
+    return scan_explosion_hunter(min_upside_pct=min_upside_pct)
+
+
 data = load_data(symbol, PERIOD, INTERVAL)
 
 if data.empty:
@@ -1009,7 +1293,7 @@ forward_scenario = build_forward_scenario(
 )
 latest_close = float(latest["Close"])
 
-tab_decision, tab_chart, tab_test = st.tabs(["القرار", "الشارت", "الاختبار"])
+tab_decision, tab_chart, tab_test, tab_opportunities = st.tabs(["القرار", "الشارت", "الاختبار", "صيد الانفجارات"])
 
 with tab_decision:
     st.subheader(f"{instrument_name} — الخلاصة")
@@ -1597,3 +1881,44 @@ with tab_test:
             display_trades["entry_date"] = display_trades["entry_date"].astype(str)
             display_trades["exit_date"] = display_trades["exit_date"].astype(str)
             st.dataframe(display_trades.tail(20), use_container_width=True)
+
+
+with tab_opportunities:
+    st.subheader("صيد الانفجارات السعرية")
+    st.caption("قائمة مستقلة تبحث عن أسهم/كريبتو عندها سيناريو انفجار سعري محتمل يبدأ من 50% ومفتوح للأعلى. ليست وعداً بالصعود ولا توصية شراء.")
+
+    st.info("الفلتر يبحث عن نمط شبيه بحالات مثل BNAI قبل الحركة: سعر مضغوط، بداية دورة، تحسن حجم، اقتراب من اختراق، ومساحة صعود كبيرة.")
+
+    if st.button("ابدأ صيد الانفجارات الآن", use_container_width=True):
+        with st.spinner("جاري فحص المرشحين عاليي الحركة... قد يستغرق قليلاً"):
+            st.session_state["explosion_hunter"] = scan_explosion_hunter(EXPLOSION_MIN_UPSIDE_PCT)
+
+    explosion_df = st.session_state.get("explosion_hunter", pd.DataFrame())
+
+    if explosion_df.empty:
+        st.warning("لا يوجد مرشح انفجار سعري صالح الآن حسب فلتر 50%+. عدم ظهور أسماء أفضل من إظهار فرص وهمية.")
+    else:
+        display_cols = [
+            "الرمز",
+            "الاسم",
+            "النوع",
+            "نسبة الصعود المفتوحة",
+            "منطقة الدخول",
+            "هدف بنيوي مفتوح",
+            "إلغاء السيناريو",
+            "نافذة المراقبة",
+            "مرحلة الدورة",
+            "خطر فشل الاختراق",
+            "سبب الظهور",
+        ]
+        st.dataframe(
+            explosion_df[display_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+        top_row = explosion_df.iloc[0]
+        st.success(
+            f"أقوى مرشح الآن: {top_row['الرمز']} — صعود مفتوح {top_row['نسبة الصعود المفتوحة']}، "
+            f"ومنطقة الدخول {top_row['منطقة الدخول']}، ونافذة المراقبة {top_row['نافذة المراقبة']}."
+        )
+        st.caption("اقرأ هذه القائمة كقائمة مراقبة. القرار النهائي يبقى من صفحة القرار والشارت لكل رمز، مع إلغاء السيناريو واضح.")
