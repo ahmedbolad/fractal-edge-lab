@@ -14,76 +14,107 @@ st.title("Fractal Edge Lab")
 st.caption("منصة شخصية خاصة لتحليل الأسهم وقراءة البنية السعرية")
 st.warning("هذه أداة شخصية للتحليل والاختبار، وليست نصيحة مالية أو توصية تداول.")
 
-with st.sidebar:
-    st.header("الإعدادات")
+# Locked engine settings — ثابتة حسب التقرير المعتمد والملف الأساسي
+# لا تظهر للمستخدم حتى تبقى المنصة تعطي إشارة مباشرة بدون ضبط يدوي.
+PERIOD = "5y"
+INTERVAL = "1d"
+PIVOT_WINDOW = 5
+MIN_SWING_ATR = 1.5
+TRAIN_RATIO = 0.70
+MAX_CYCLE_POSITION = 35.0
+HOLD_DAYS = 20
+COST_PCT = 0.20
 
+SYMBOL_ALIASES = {
+    "ذهب": ("GC=F", "Gold Futures"),
+    "الذهب": ("GC=F", "Gold Futures"),
+    "دهب": ("GC=F", "Gold Futures"),
+    "gold": ("GC=F", "Gold Futures"),
+    "xau": ("GC=F", "Gold Futures"),
+    "xauusd": ("GC=F", "Gold Futures"),
+    "xauusd=x": ("XAUUSD=X", "Gold Spot"),
+    "gld": ("GLD", "SPDR Gold Shares"),
+    "فضة": ("SI=F", "Silver Futures"),
+    "الفضة": ("SI=F", "Silver Futures"),
+    "silver": ("SI=F", "Silver Futures"),
+    "xag": ("SI=F", "Silver Futures"),
+    "xagusd": ("SI=F", "Silver Futures"),
+    "نفط": ("CL=F", "WTI Crude Oil"),
+    "النفط": ("CL=F", "WTI Crude Oil"),
+    "oil": ("CL=F", "WTI Crude Oil"),
+    "wti": ("CL=F", "WTI Crude Oil"),
+    "brent": ("BZ=F", "Brent Crude Oil"),
+    "بتكوين": ("BTC-USD", "Bitcoin"),
+    "بيتكوين": ("BTC-USD", "Bitcoin"),
+    "bitcoin": ("BTC-USD", "Bitcoin"),
+    "btc": ("BTC-USD", "Bitcoin"),
+    "اثيريوم": ("ETH-USD", "Ethereum"),
+    "ethereum": ("ETH-USD", "Ethereum"),
+    "eth": ("ETH-USD", "Ethereum"),
+    "ناسداك": ("QQQ", "Nasdaq 100 ETF"),
+    "nasdaq": ("QQQ", "Nasdaq 100 ETF"),
+    "qqq": ("QQQ", "Nasdaq 100 ETF"),
+    "sp500": ("SPY", "S&P 500 ETF"),
+    "s&p500": ("SPY", "S&P 500 ETF"),
+    "spy": ("SPY", "S&P 500 ETF"),
+    "داو": ("DIA", "Dow Jones ETF"),
+    "dow": ("DIA", "Dow Jones ETF"),
+    "apple": ("AAPL", "Apple"),
+    "ابل": ("AAPL", "Apple"),
+    "tesla": ("TSLA", "Tesla"),
+    "تسلا": ("TSLA", "Tesla"),
+    "nvidia": ("NVDA", "NVIDIA"),
+    "نفيديا": ("NVDA", "NVIDIA"),
+    "microsoft": ("MSFT", "Microsoft"),
+    "مايكروسوفت": ("MSFT", "Microsoft"),
+    "amd": ("AMD", "AMD"),
+}
+
+
+def normalize_symbol_text(value: str) -> str:
+    cleaned = str(value).strip().lower()
+    for token in [" ", "-", "_", "/", "\\", ":"]:
+        cleaned = cleaned.replace(token, "")
+    return cleaned
+
+
+def resolve_symbol(value: str) -> tuple[str, str, str]:
+    raw = str(value).strip()
+    key = normalize_symbol_text(raw)
+
+    if key in SYMBOL_ALIASES:
+        ticker, name = SYMBOL_ALIASES[key]
+        return ticker, name, raw
+
+    ticker = raw.upper().replace(" ", "")
+    return ticker, ticker, raw
+
+
+input_col, refresh_col = st.columns([4, 1])
+
+with input_col:
     symbol_input = st.text_input(
-        "اكتب رمز السهم",
+        "اكتب الرمز أو الاسم",
         value="AMD",
-        placeholder="مثال: AAPL أو TSLA أو NVDA"
+        placeholder="مثال: AMD أو الذهب أو GOLD أو NVDA",
+        label_visibility="collapsed"
     )
 
-    symbol = symbol_input.strip().upper()
+with refresh_col:
+    st.write("")
+    refresh_clicked = st.button("تحديث", use_container_width=True)
 
-    if not symbol:
-        st.warning("اكتب رمز السهم أولاً.")
-        st.stop()
+if refresh_clicked:
+    st.cache_data.clear()
+    st.rerun()
 
-    period = st.selectbox("الفترة التاريخية", ["1y", "2y", "5y", "10y"], index=2)
-    interval = st.selectbox("الإطار الزمني", ["1d", "1wk"], index=0)
+symbol, instrument_name, raw_symbol_input = resolve_symbol(symbol_input)
 
-    with st.expander("إعدادات متقدمة"):
-        pivot_window = st.slider(
-            "حساسية القمم والقيعان",
-            min_value=2,
-            max_value=10,
-            value=3,
-            step=1
-        )
+if not symbol:
+    st.warning("اكتب رمز السهم أو اسم الأصل أولاً.")
+    st.stop()
 
-        min_swing_atr = st.slider(
-            "فلترة قوة الحركة ATR",
-            min_value=0.5,
-            max_value=5.0,
-            value=1.5,
-            step=0.5
-        )
-
-        train_ratio = st.slider(
-            "نسبة أول جزء من البيانات",
-            min_value=0.50,
-            max_value=0.85,
-            value=0.70,
-            step=0.05
-        )
-
-        max_cycle_position = st.slider(
-            "أقصى موقع دخول داخل الدورة %",
-            min_value=10.0,
-            max_value=60.0,
-            value=35.0,
-            step=5.0
-        )
-
-        hold_days = st.slider(
-            "مدة الاختبار بالشموع",
-            min_value=5,
-            max_value=60,
-            value=20,
-            step=5
-        )
-
-        cost_pct = st.number_input(
-            "تكلفة الصفقة التقريبية %",
-            min_value=0.0,
-            max_value=5.0,
-            value=0.20,
-            step=0.05
-        )
-
-    if st.button("تحديث البيانات ومسح الكاش"):
-        st.cache_data.clear()
-        st.rerun()
+st.caption(f"الأصل: {instrument_name} — الرمز المستخدم للبيانات: {symbol}")
 
 
 @st.cache_data(show_spinner=False)
@@ -623,7 +654,7 @@ def run_fractal_decision_backtest_v1(
         filtered_swings = filter_swings_by_atr(
             confirmed_swings,
             df,
-            min_atr_multiple=min_swing_atr
+            min_atr_multiple=MIN_SWING_ATR
         )
 
         structure_state = analyze_structure_from_swings(
@@ -677,11 +708,82 @@ def run_fractal_decision_backtest_v1(
     stats = summarize_trades(
         trades_df=trades_df,
         df=df,
-        hold_days=hold_days,
+        hold_days=HOLD_DAYS,
         start_index=start_index
     )
 
     return trades_df, stats
+
+
+def build_forward_scenario(
+    df: pd.DataFrame,
+    swings: list[dict],
+    structure_state: dict,
+    cycle_state: dict,
+    false_breakout: dict,
+    horizon: int = 20
+) -> dict:
+    latest = df.iloc[-1]
+    last_close = float(latest["Close"])
+    atr = float(latest["atr14"]) if not pd.isna(latest["atr14"]) and latest["atr14"] > 0 else last_close * 0.03
+
+    highs = [s for s in swings if s["type"] == "high"]
+    lows = [s for s in swings if s["type"] == "low"]
+    last_high = highs[-1]["price"] if highs else last_close + atr
+    last_low = lows[-1]["price"] if lows else last_close - atr
+
+    structure = structure_state["structure_trend"]
+    quality = cycle_state["cycle_quality"]
+    position = cycle_state["cycle_position"]
+    fb_risk = false_breakout["risk"]
+
+    if structure == "بنية صاعدة" and quality in ["قوية", "متوسطة"] and not pd.isna(position) and position <= 35 and fb_risk != "مرتفع":
+        label = "امتداد صاعد مشروط"
+        bias = "إيجابي"
+        low = max(last_close - 1.2 * atr, last_low)
+        high = max(last_close + 2.2 * atr, last_high)
+        invalidation = min(last_close - 1.5 * atr, last_low)
+        note = "السيناريو الصاعد يبقى قائماً ما دام السعر لا يكسر منطقة الإلغاء."
+    elif structure == "بنية صاعدة" and (fb_risk == "مرتفع" or (not pd.isna(position) and position >= 75)):
+        label = "تصحيح أو تهدئة محتملة"
+        bias = "حذر"
+        low = max(last_close - 2.0 * atr, last_low)
+        high = last_close + 0.8 * atr
+        invalidation = max(last_close + 1.2 * atr, last_high)
+        note = "السعر متأخر داخل الدورة أو توجد علامة فشل اختراق؛ الأفضل انتظار قاع جديد."
+    elif structure == "بنية هابطة":
+        label = "ضغط هابط محتمل"
+        bias = "سلبي"
+        low = min(last_close - 2.0 * atr, last_low)
+        high = last_close + 1.0 * atr
+        invalidation = max(last_close + 1.5 * atr, last_high)
+        note = "البنية الهابطة تلغي فكرة المتابعة حتى يظهر تحول واضح."
+    else:
+        label = "نطاق انتظار"
+        bias = "محايد"
+        low = last_close - 1.5 * atr
+        high = last_close + 1.5 * atr
+        invalidation = np.nan
+        note = "لا توجد أفضلية بنيوية كافية؛ الانتظار أفضل من التوقع القسري."
+
+    low, high = sorted([float(low), float(high)])
+
+    return {
+        "label": label,
+        "bias": bias,
+        "range_low": low,
+        "range_high": high,
+        "mid": (low + high) / 2,
+        "invalidation": invalidation,
+        "horizon": horizon,
+        "note": note,
+    }
+
+
+def next_business_date(date_value, bars: int):
+    date_value = pd.to_datetime(date_value)
+    dates = pd.bdate_range(start=date_value, periods=bars + 1)
+    return dates[-1]
 
 
 def make_backtest_verdict(stats: dict) -> dict:
@@ -730,22 +832,22 @@ def make_backtest_verdict(stats: dict) -> dict:
     }
 
 
-data = load_data(symbol, period, interval)
+data = load_data(symbol, PERIOD, INTERVAL)
 
 if data.empty:
     st.error("لم يتم العثور على بيانات لهذا الرمز. تأكد من كتابة الرمز بشكل صحيح.")
     st.stop()
 
 df = add_market_features(data)
-df = detect_fractal_swings(df, left=pivot_window, right=pivot_window)
+df = detect_fractal_swings(df, left=PIVOT_WINDOW, right=PIVOT_WINDOW)
 clean_df = df.dropna().reset_index(drop=True)
 
 if len(clean_df) < 250:
     st.error("البيانات المتاحة قليلة جداً لهذا الإطار. جرّب فترة أطول أو إطار 1d.")
     st.stop()
 
-raw_swings = build_swing_sequence(clean_df, confirmation_delay=pivot_window)
-swing_sequence = filter_swings_by_atr(raw_swings, clean_df, min_atr_multiple=min_swing_atr)
+raw_swings = build_swing_sequence(clean_df, confirmation_delay=PIVOT_WINDOW)
+swing_sequence = filter_swings_by_atr(raw_swings, clean_df, min_atr_multiple=MIN_SWING_ATR)
 
 current_index = len(clean_df) - 1
 structure_state = analyze_structure_from_swings(clean_df, swing_sequence, current_index=current_index)
@@ -761,36 +863,44 @@ decision_state = make_personal_decision(
     false_breakout=false_breakout
 )
 
-train_df, test_df = split_train_test(clean_df, train_ratio=train_ratio)
+train_df, test_df = split_train_test(clean_df, train_ratio=TRAIN_RATIO)
 test_start_index = min(20, max(len(test_df) // 5, 1))
 
 fractal_all_trades, fractal_all_stats = run_fractal_decision_backtest_v1(
     clean_df,
-    hold_days=hold_days,
-    cost_pct=cost_pct,
-    min_swing_atr=min_swing_atr,
-    confirmation_delay=pivot_window,
-    max_cycle_position=max_cycle_position,
+    hold_days=HOLD_DAYS,
+    cost_pct=COST_PCT,
+    min_swing_atr=MIN_SWING_ATR,
+    confirmation_delay=PIVOT_WINDOW,
+    max_cycle_position=MAX_CYCLE_POSITION,
     start_index=200
 )
 
 fractal_test_trades, fractal_test_stats = run_fractal_decision_backtest_v1(
     test_df,
-    hold_days=hold_days,
-    cost_pct=cost_pct,
-    min_swing_atr=min_swing_atr,
-    confirmation_delay=pivot_window,
-    max_cycle_position=max_cycle_position,
+    hold_days=HOLD_DAYS,
+    cost_pct=COST_PCT,
+    min_swing_atr=MIN_SWING_ATR,
+    confirmation_delay=PIVOT_WINDOW,
+    max_cycle_position=MAX_CYCLE_POSITION,
     start_index=test_start_index
 )
 
 backtest_verdict = make_backtest_verdict(fractal_test_stats)
+forward_scenario = build_forward_scenario(
+    clean_df,
+    swing_sequence,
+    structure_state,
+    cycle_state,
+    false_breakout,
+    horizon=HOLD_DAYS
+)
 latest_close = float(latest["Close"])
 
 tab_decision, tab_chart, tab_test = st.tabs(["القرار", "الشارت", "الاختبار"])
 
 with tab_decision:
-    st.subheader(f"{symbol} — الخلاصة")
+    st.subheader(f"{instrument_name} — الخلاصة")
 
     decision = decision_state["decision"]
 
@@ -803,39 +913,29 @@ with tab_decision:
     else:
         st.info(f"القرار: {decision}")
 
-    top_1, top_2, top_3, top_4 = st.columns(4)
+    top_1, top_2, top_3 = st.columns(3)
 
     with top_1:
         st.metric("آخر سعر", f"{latest_close:.2f}")
-
-    with top_2:
         st.metric("البنية", structure_state["structure_trend"])
 
-    with top_3:
-        st.metric("الدورة", cycle_state["cycle_quality"])
-
-    with top_4:
+    with top_2:
+        st.metric("مرحلة الدورة", cycle_state["cycle_phase"])
         if pd.isna(cycle_state["cycle_position"]):
             st.metric("موقع الدورة", "غير متاح")
         else:
             st.metric("موقع الدورة", f"{cycle_state['cycle_position']:.2f}%")
 
-    mid_1, mid_2, mid_3 = st.columns(3)
-
-    with mid_1:
-        st.metric("مرحلة الدورة", cycle_state["cycle_phase"])
-
-    with mid_2:
-        st.metric("اختراق كاذب", false_breakout["risk"])
-
-    with mid_3:
+    with top_3:
+        st.metric("التوقع القادم", forward_scenario["label"])
         st.metric("حكم الاختبار", backtest_verdict["label"])
 
     st.divider()
 
+    range_text = f"{forward_scenario['range_low']:.2f} — {forward_scenario['range_high']:.2f}"
     st.info(f"**السبب:** {decision_state['reason']}")
     st.warning(f"**أنتظر:** {decision_state['waiting_for']}")
-    st.caption(f"ملاحظة الاختراق الكاذب: {false_breakout['note']}")
+    st.caption(f"النطاق المتوقع خلال {HOLD_DAYS} شمعة: {range_text}. {forward_scenario['note']}")
 
     if backtest_verdict["tone"] == "success":
         st.success(f"اختبار آخر 30%: {backtest_verdict['text']}")
@@ -858,44 +958,145 @@ with tab_chart:
             high=clean_df["High"],
             low=clean_df["Low"],
             close=clean_df["Close"],
-            name=symbol
+            name=symbol,
+            increasing_line_color="#26a69a",
+            increasing_fillcolor="#26a69a",
+            decreasing_line_color="#ef5350",
+            decreasing_fillcolor="#ef5350",
         )
     )
 
-    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma20"], mode="lines", name="MA 20"))
-    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma50"], mode="lines", name="MA 50"))
-    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma200"], mode="lines", name="MA 200"))
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma20"], mode="lines", name="MA 20", line=dict(width=1.4, color="#42a5f5")))
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma50"], mode="lines", name="MA 50", line=dict(width=1.4, color="#ffca28")))
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma200"], mode="lines", name="MA 200", line=dict(width=1.6, color="#ab47bc")))
 
-    swing_highs = clean_df[clean_df["swing_high"]]
-    swing_lows = clean_df[clean_df["swing_low"]]
+    recent_structural_swings = swing_sequence[-24:]
+    swing_high_points = [s for s in recent_structural_swings if s["type"] == "high"]
+    swing_low_points = [s for s in recent_structural_swings if s["type"] == "low"]
+
+    if swing_high_points:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in swing_high_points],
+                y=[s["price"] for s in swing_high_points],
+                mode="markers",
+                name="قمم بنيوية",
+                marker=dict(symbol="triangle-down", size=10, color="#ff7043"),
+            )
+        )
+
+    if swing_low_points:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in swing_low_points],
+                y=[s["price"] for s in swing_low_points],
+                mode="markers",
+                name="قيعان بنيوية",
+                marker=dict(symbol="triangle-up", size=10, color="#26c6da"),
+            )
+        )
+
+    highs = [s for s in swing_sequence if s["type"] == "high"]
+    lows = [s for s in swing_sequence if s["type"] == "low"]
+    last_date = clean_df["Date"].iloc[-1]
+    future_date = next_business_date(last_date, HOLD_DAYS)
+
+    if highs:
+        last_high = highs[-1]
+        fig.add_hline(
+            y=last_high["price"],
+            line_dash="dot",
+            line_color="#ff7043",
+            annotation_text="آخر قمة",
+            annotation_position="top left",
+        )
+
+    if lows:
+        last_low = lows[-1]
+        fig.add_hline(
+            y=last_low["price"],
+            line_dash="dot",
+            line_color="#26c6da",
+            annotation_text="آخر قاع",
+            annotation_position="bottom left",
+        )
+
+    fig.add_shape(
+        type="rect",
+        x0=last_date,
+        x1=future_date,
+        y0=forward_scenario["range_low"],
+        y1=forward_scenario["range_high"],
+        fillcolor="rgba(66, 165, 245, 0.16)",
+        line=dict(width=0),
+        layer="below",
+    )
 
     fig.add_trace(
         go.Scatter(
-            x=swing_highs["Date"],
-            y=swing_highs["High"],
-            mode="markers",
-            name="Fractal High",
-            marker=dict(symbol="triangle-down", size=10)
+            x=[last_date, future_date],
+            y=[latest_close, forward_scenario["mid"]],
+            mode="lines",
+            name="مسار متوقع",
+            line=dict(color="#42a5f5", width=2, dash="dash"),
         )
     )
 
     fig.add_trace(
         go.Scatter(
-            x=swing_lows["Date"],
-            y=swing_lows["Low"],
-            mode="markers",
-            name="Fractal Low",
-            marker=dict(symbol="triangle-up", size=10)
+            x=[future_date],
+            y=[forward_scenario["range_high"]],
+            mode="markers+text",
+            name="النطاق المتوقع",
+            text=["نطاق متوقع"],
+            textposition="top center",
+            marker=dict(size=8, color="#42a5f5"),
         )
     )
+
+    if not pd.isna(forward_scenario["invalidation"]):
+        fig.add_hline(
+            y=forward_scenario["invalidation"],
+            line_dash="dash",
+            line_color="#fdd835",
+            annotation_text="إلغاء السيناريو",
+            annotation_position="bottom right",
+        )
 
     fig.update_layout(
-        height=700,
-        xaxis_rangeslider_visible=False,
-        template="plotly_white"
+        height=760,
+        template="plotly_dark",
+        paper_bgcolor="#0b0f19",
+        plot_bgcolor="#0b0f19",
+        font=dict(color="#d1d4dc"),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=35, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=6, label="6M", step="month", stepmode="backward"),
+                    dict(count=1, label="1Y", step="year", stepmode="backward"),
+                    dict(count=2, label="2Y", step="year", stepmode="backward"),
+                    dict(step="all", label="ALL"),
+                ])
+            ),
+        ),
+        yaxis=dict(
+            side="right",
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            fixedrange=False,
+        ),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displaylogo": False})
+    st.caption(
+        f"التوقع ليس توصية تداول؛ هو سيناريو بنيوي آلي لمدة {HOLD_DAYS} شمعة حسب الدورة، القمم/القيعان، الاختراق الكاذب، وATR."
+    )
 
 with tab_test:
     st.subheader("Fractal Decision Backtest")
