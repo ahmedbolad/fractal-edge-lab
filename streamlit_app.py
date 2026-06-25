@@ -809,12 +809,18 @@ def build_forward_scenario(
     position = cycle_state["cycle_position"]
     fb_risk = false_breakout["risk"]
 
+    ma20 = float(latest["ma20"]) if "ma20" in latest and not pd.isna(latest["ma20"]) else last_close
+    ma50 = float(latest["ma50"]) if "ma50" in latest and not pd.isna(latest["ma50"]) else last_close
+
     if structure == "بنية صاعدة" and quality in ["قوية", "متوسطة"] and not pd.isna(position) and position <= 35 and fb_risk != "مرتفع":
         label = "امتداد صاعد مشروط"
         bias = "إيجابي"
         low = max(last_close - 1.2 * atr, last_low)
         high = max(last_close + 2.2 * atr, last_high)
         invalidation = min(last_close - 1.5 * atr, last_low)
+        entry_low = max(last_low, last_close - 0.8 * atr)
+        entry_high = last_close + 0.3 * atr
+        entry_note = "نقطة الدخول المثالية: راقب قرب المنطقة الحالية/أي رجوع خفيف داخل بداية الدورة."
         note = "السيناريو الصاعد يبقى قائماً ما دام السعر لا يكسر منطقة الإلغاء."
     elif structure == "بنية صاعدة" and (fb_risk == "مرتفع" or (not pd.isna(position) and position >= 75)):
         label = "تصحيح أو تهدئة محتملة"
@@ -822,6 +828,10 @@ def build_forward_scenario(
         low = max(last_close - 2.0 * atr, last_low)
         high = last_close + 0.8 * atr
         invalidation = max(last_close + 1.2 * atr, last_high)
+        pullback_low = max(last_low, min(ma20, ma50, last_close - 2.2 * atr))
+        pullback_high = max(pullback_low, min(last_close - 1.0 * atr, max(ma20, ma50)))
+        entry_low, entry_high = sorted([float(pullback_low), float(pullback_high)])
+        entry_note = f"نقطة الدخول المثالية: انتظر قرب {entry_low:.2f} - {entry_high:.2f}."
         note = "السعر متأخر داخل الدورة أو توجد علامة فشل اختراق؛ الأفضل انتظار قاع جديد."
     elif structure == "بنية هابطة":
         label = "ضغط هابط محتمل"
@@ -829,6 +839,9 @@ def build_forward_scenario(
         low = min(last_close - 2.0 * atr, last_low)
         high = last_close + 1.0 * atr
         invalidation = max(last_close + 1.5 * atr, last_high)
+        entry_low = np.nan
+        entry_high = np.nan
+        entry_note = "نقطة الدخول المثالية: لا توجد منطقة دخول صالحة الآن؛ انتظر تحول البنية إلى صاعدة."
         note = "البنية الهابطة تلغي فكرة المتابعة حتى يظهر تحول واضح."
     else:
         label = "نطاق انتظار"
@@ -836,6 +849,10 @@ def build_forward_scenario(
         low = last_close - 1.5 * atr
         high = last_close + 1.5 * atr
         invalidation = np.nan
+        entry_low = max(last_low, last_close - 1.2 * atr)
+        entry_high = last_close - 0.4 * atr
+        entry_low, entry_high = sorted([float(entry_low), float(entry_high)])
+        entry_note = f"نقطة الدخول المثالية: انتظر قرب {entry_low:.2f} - {entry_high:.2f} فقط إذا تحسنت البنية."
         note = "لا توجد أفضلية بنيوية كافية؛ الانتظار أفضل من التوقع القسري."
 
     low, high = sorted([float(low), float(high)])
@@ -847,6 +864,9 @@ def build_forward_scenario(
         "range_high": high,
         "mid": (low + high) / 2,
         "invalidation": invalidation,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "entry_note": entry_note,
         "horizon": horizon,
         "note": note,
     }
@@ -1003,6 +1023,7 @@ with tab_decision:
     range_text = f"{forward_scenario['range_low']:.2f} — {forward_scenario['range_high']:.2f}"
     st.info(f"**السبب:** {decision_state['reason']}")
     st.warning(f"**أنتظر:** {decision_state['waiting_for']}")
+    st.success(f"**{forward_scenario['entry_note']}**")
     st.caption(f"النطاق المتوقع خلال {HOLD_DAYS} شمعة: {range_text}. {forward_scenario['note']}")
 
     if backtest_verdict["tone"] == "success":
@@ -1015,251 +1036,228 @@ with tab_decision:
         st.warning(f"اختبار آخر 30%: {backtest_verdict['text']}")
 
 with tab_chart:
-    st.subheader("الشارت")
-
-    # TradingView-style clean chart: price action first, no forecast box, no scenario lines.
-    chart_df = clean_df.tail(900).copy()
-    chart_swings = [s for s in swing_sequence if s.get("date") in set(chart_df["Date"])]
-    chart_swings = chart_swings[-40:]
+    st.subheader("الشارت البنيوي")
 
     fig = make_subplots(
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
+        vertical_spacing=0.04,
         row_heights=[0.78, 0.22],
     )
 
     fig.add_trace(
         go.Candlestick(
-            x=chart_df["Date"],
-            open=chart_df["Open"],
-            high=chart_df["High"],
-            low=chart_df["Low"],
-            close=chart_df["Close"],
+            x=clean_df["Date"],
+            open=clean_df["Open"],
+            high=clean_df["High"],
+            low=clean_df["Low"],
+            close=clean_df["Close"],
             name=symbol,
-            increasing_line_color="#00c087",
-            increasing_fillcolor="#00c087",
-            decreasing_line_color="#ff4d4d",
-            decreasing_fillcolor="#ff4d4d",
-            line=dict(width=1),
+            increasing_line_color="#26a69a",
+            increasing_fillcolor="#26a69a",
+            decreasing_line_color="#ef5350",
+            decreasing_fillcolor="#ef5350",
         ),
         row=1,
         col=1,
     )
 
-    fig.add_trace(
-        go.Scatter(
-            x=chart_df["Date"],
-            y=chart_df["ma20"],
-            mode="lines",
-            name="MA 20",
-            line=dict(width=1.2, color="#2b7cff"),
-            hoverinfo="skip",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=chart_df["Date"],
-            y=chart_df["ma50"],
-            mode="lines",
-            name="MA 50",
-            line=dict(width=1.2, color="#f4c542"),
-            hoverinfo="skip",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=chart_df["Date"],
-            y=chart_df["ma200"],
-            mode="lines",
-            name="MA 200",
-            line=dict(width=1.5, color="#b25cff"),
-            hoverinfo="skip",
-        ),
-        row=1,
-        col=1,
-    )
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma20"], mode="lines", name="MA 20", line=dict(width=1.4, color="#42a5f5")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma50"], mode="lines", name="MA 50", line=dict(width=1.4, color="#ffca28")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=clean_df["Date"], y=clean_df["ma200"], mode="lines", name="MA 200", line=dict(width=1.6, color="#ab47bc")), row=1, col=1)
 
-    if len(chart_swings) >= 2:
+    recent_structural_swings = swing_sequence[-32:]
+    if len(recent_structural_swings) >= 2:
         fig.add_trace(
             go.Scatter(
-                x=[s["date"] for s in chart_swings],
-                y=[s["price"] for s in chart_swings],
-                mode="lines",
-                name="Structure",
-                line=dict(width=1.7, color="#f4c542"),
-                hovertemplate="%{y:.2f}<extra>Structure</extra>",
+                x=[s["date"] for s in recent_structural_swings],
+                y=[s["price"] for s in recent_structural_swings],
+                mode="lines+markers",
+                name="ZigZag بنيوي",
+                line=dict(width=1.6, color="#fdd835"),
+                marker=dict(size=6, color="#fdd835"),
             ),
             row=1,
             col=1,
         )
 
-    if len(chart_swings) >= 1:
-        highs_for_chart = [s for s in chart_swings if s["type"] == "high"]
-        lows_for_chart = [s for s in chart_swings if s["type"] == "low"]
-        if highs_for_chart:
-            fig.add_trace(
-                go.Scatter(
-                    x=[s["date"] for s in highs_for_chart],
-                    y=[s["price"] for s in highs_for_chart],
-                    mode="markers",
-                    name="High",
-                    marker=dict(symbol="triangle-down", size=8, color="#ff8a3d"),
-                    hovertemplate="High: %{y:.2f}<extra></extra>",
-                ),
-                row=1,
-                col=1,
-            )
-        if lows_for_chart:
-            fig.add_trace(
-                go.Scatter(
-                    x=[s["date"] for s in lows_for_chart],
-                    y=[s["price"] for s in lows_for_chart],
-                    mode="markers",
-                    name="Low",
-                    marker=dict(symbol="triangle-up", size=8, color="#23d5e6"),
-                    hovertemplate="Low: %{y:.2f}<extra></extra>",
-                ),
-                row=1,
-                col=1,
-            )
+    swing_high_points = [s for s in recent_structural_swings if s["type"] == "high"]
+    swing_low_points = [s for s in recent_structural_swings if s["type"] == "low"]
 
-    vol_colors = np.where(chart_df["Close"] >= chart_df["Open"], "#00c087", "#ff4d4d")
+    if swing_high_points:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in swing_high_points],
+                y=[s["price"] for s in swing_high_points],
+                mode="markers",
+                name="قمم",
+                marker=dict(symbol="triangle-down", size=10, color="#ff7043"),
+            ),
+            row=1,
+            col=1,
+        )
+
+    if swing_low_points:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in swing_low_points],
+                y=[s["price"] for s in swing_low_points],
+                mode="markers",
+                name="قيعان",
+                marker=dict(symbol="triangle-up", size=10, color="#26c6da"),
+            ),
+            row=1,
+            col=1,
+        )
+
+    volume_color = np.where(clean_df["Close"] >= clean_df["Open"], "#26a69a", "#ef5350")
     fig.add_trace(
         go.Bar(
-            x=chart_df["Date"],
-            y=chart_df["Volume"],
+            x=clean_df["Date"],
+            y=clean_df["Volume"],
             name="Volume",
-            marker_color=vol_colors,
-            opacity=0.32,
-            hovertemplate="Volume: %{y:,.0f}<extra></extra>",
+            marker_color=volume_color,
+            opacity=0.45,
         ),
         row=2,
         col=1,
     )
 
-    # Keep only the most useful structural levels, without forecast boxes or visual promises.
-    highs = [s for s in chart_swings if s["type"] == "high"]
-    lows = [s for s in chart_swings if s["type"] == "low"]
+    highs = [s for s in swing_sequence if s["type"] == "high"]
+    lows = [s for s in swing_sequence if s["type"] == "low"]
+    last_date = clean_df["Date"].iloc[-1]
+    future_date = next_trading_date(last_date, HOLD_DAYS, asset_type)
+
     if highs:
+        last_high = highs[-1]
         fig.add_hline(
-            y=highs[-1]["price"],
+            y=last_high["price"],
             line_dash="dot",
-            line_color="rgba(255,138,61,0.75)",
-            line_width=1,
+            line_color="#ff7043",
             annotation_text="آخر قمة",
-            annotation_position="top right",
+            annotation_position="top left",
             row=1,
             col=1,
         )
+
     if lows:
+        last_low = lows[-1]
         fig.add_hline(
-            y=lows[-1]["price"],
+            y=last_low["price"],
             line_dash="dot",
-            line_color="rgba(35,213,230,0.75)",
-            line_width=1,
+            line_color="#26c6da",
             annotation_text="آخر قاع",
+            annotation_position="bottom left",
+            row=1,
+            col=1,
+        )
+
+    fig.add_shape(
+        type="rect",
+        x0=last_date,
+        x1=future_date,
+        y0=forward_scenario["range_low"],
+        y1=forward_scenario["range_high"],
+        xref="x",
+        yref="y",
+        fillcolor="rgba(66, 165, 245, 0.07)",
+        line=dict(width=0),
+        layer="below",
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[last_date, future_date],
+            y=[latest_close, forward_scenario["mid"]],
+            mode="lines",
+            name="سيناريو",
+            line=dict(color="#42a5f5", width=1.5, dash="dash"),
+        ),
+        row=1,
+        col=1,
+    )
+
+    if not pd.isna(forward_scenario.get("entry_low", np.nan)) and not pd.isna(forward_scenario.get("entry_high", np.nan)):
+        fig.add_shape(
+            type="rect",
+            x0=last_date,
+            x1=future_date,
+            y0=forward_scenario["entry_low"],
+            y1=forward_scenario["entry_high"],
+            xref="x",
+            yref="y",
+            fillcolor="rgba(38, 166, 154, 0.12)",
+            line=dict(color="rgba(38, 166, 154, 0.45)", width=1),
+            layer="below",
+        )
+        fig.add_annotation(
+            x=future_date,
+            y=(forward_scenario["entry_low"] + forward_scenario["entry_high"]) / 2,
+            text="منطقة دخول مثالية",
+            showarrow=False,
+            font=dict(color="#80cbc4", size=11),
+            bgcolor="rgba(11,15,25,0.65)",
+            bordercolor="rgba(38,166,154,0.45)",
+            xanchor="right",
+            yanchor="middle",
+            row=1,
+            col=1,
+        )
+
+    if not pd.isna(forward_scenario["invalidation"]):
+        fig.add_hline(
+            y=forward_scenario["invalidation"],
+            line_dash="dash",
+            line_color="#fdd835",
+            annotation_text="إلغاء السيناريو",
             annotation_position="bottom right",
             row=1,
             col=1,
         )
 
-    if asset_type == "stock":
-        rangebreaks = [dict(bounds=["sat", "mon"])]
-    else:
-        rangebreaks = []
-
     fig.update_layout(
-        height=760,
+        height=780,
         template="plotly_dark",
-        paper_bgcolor="#0b0f14",
-        plot_bgcolor="#0b0f14",
-        font=dict(color="#d6d8de", size=12),
-        margin=dict(l=10, r=10, t=35, b=10),
+        paper_bgcolor="#0b0f19",
+        plot_bgcolor="#0b0f19",
+        font=dict(color="#d1d4dc"),
         hovermode="x unified",
-        dragmode="pan",
-        uirevision=f"{symbol}-{PERIOD}-{INTERVAL}",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            bgcolor="rgba(0,0,0,0)",
-            font=dict(size=11),
+        margin=dict(l=20, r=20, t=35, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=6, label="6M", step="month", stepmode="backward"),
+                    dict(count=1, label="1Y", step="year", stepmode="backward"),
+                    dict(count=2, label="2Y", step="year", stepmode="backward"),
+                    dict(step="all", label="ALL"),
+                ])
+            ),
+        ),
+        xaxis2=dict(showgrid=True, gridcolor="rgba(255,255,255,0.04)"),
+        yaxis=dict(
+            side="right",
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            fixedrange=False,
+        ),
+        yaxis2=dict(
+            side="right",
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.04)",
+            title="Volume",
         ),
         bargap=0,
-        showlegend=True,
     )
 
-    fig.update_xaxes(
-        rangeslider=dict(visible=False),
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.045)",
-        zeroline=False,
-        showspikes=True,
-        spikemode="across",
-        spikesnap="cursor",
-        spikecolor="rgba(255,255,255,0.35)",
-        spikethickness=1,
-        rangebreaks=rangebreaks,
-        row=1,
-        col=1,
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displaylogo": False})
+    st.caption(
+        f"السيناريو ليس تنبؤاً معايراً ولا توصية. هو إسقاط بنيوي تقريبي لمدة {HOLD_DAYS} شمعة اعتماداً على الدورة، القمم/القيعان، الاختراق الكاذب، وATR."
     )
-    fig.update_xaxes(
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.035)",
-        zeroline=False,
-        showspikes=True,
-        spikemode="across",
-        spikesnap="cursor",
-        spikecolor="rgba(255,255,255,0.35)",
-        spikethickness=1,
-        rangebreaks=rangebreaks,
-        row=2,
-        col=1,
-    )
-
-    fig.update_yaxes(
-        side="right",
-        fixedrange=False,
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.055)",
-        zeroline=False,
-        tickformat=",.2f",
-        row=1,
-        col=1,
-    )
-    fig.update_yaxes(
-        side="right",
-        fixedrange=True,
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.03)",
-        zeroline=False,
-        title="Volume",
-        row=2,
-        col=1,
-    )
-
-    chart_config = {
-        "scrollZoom": True,
-        "displaylogo": False,
-        "responsive": True,
-        "doubleClick": "reset",
-        "modeBarButtonsToRemove": [
-            "select2d",
-            "lasso2d",
-            "autoScale2d",
-            "toggleSpikelines",
-        ],
-    }
-    st.plotly_chart(fig, use_container_width=True, config=chart_config)
-    st.caption("الشارت مخصص للقراءة البنيوية فقط: شموع، متوسطات، حجم، ZigZag، وآخر قمة/قاع. لا يوجد رسم توقع حتى لا يعطي ثقة بصرية وهمية.")
 
 
 with tab_test:
