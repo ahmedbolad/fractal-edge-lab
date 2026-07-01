@@ -138,6 +138,45 @@ HIGH_UPSIDE_MIN_PCT = EXPLOSION_MIN_UPSIDE_PCT
 OPPORTUNITY_UNIVERSE = EXPLOSION_UNIVERSE
 
 
+# قائمة مستقلة لفحص كسر خط 200.
+# القاعدة تبحث عن أسهم كسرت متوسط 200 على اليومي، وتحت 200 على الأسبوعي والشهري،
+# ثم عملت إعادة اختبار للكسر وفشلت، وبعدها بدأ ضغط هبوط واضح.
+MA200_BREAK_PERIOD = "20y"
+MA200_RETEST_TOLERANCE_PCT = 0.025
+MA200_MAX_BREAK_AGE_BARS = 180
+MA200_MIN_FALL_AFTER_RETEST_PCT = 3.0
+MA200_BREAK_UNIVERSE = [
+    ("AAPL", "Apple", "سهم كبير"),
+    ("MSFT", "Microsoft", "سهم كبير"),
+    ("NVDA", "NVIDIA", "AI"),
+    ("AMD", "AMD", "Semiconductors"),
+    ("TSLA", "Tesla", "High Beta"),
+    ("META", "Meta", "سهم كبير"),
+    ("GOOGL", "Alphabet", "سهم كبير"),
+    ("AMZN", "Amazon", "سهم كبير"),
+    ("NFLX", "Netflix", "سهم كبير"),
+    ("INTC", "Intel", "Semiconductors"),
+    ("BABA", "Alibaba", "China"),
+    ("PYPL", "PayPal", "High Beta"),
+    ("SHOP", "Shopify", "Growth"),
+    ("SQ", "Block", "Fintech"),
+    ("ROKU", "Roku", "Growth"),
+    ("SNAP", "Snap", "Growth"),
+    ("UBER", "Uber", "Growth"),
+    ("DIS", "Disney", "سهم كبير"),
+    ("BA", "Boeing", "Industrial"),
+    ("NKE", "Nike", "Consumer"),
+    ("SBUX", "Starbucks", "Consumer"),
+    ("PFE", "Pfizer", "Healthcare"),
+    ("MRNA", "Moderna", "Biotech"),
+    ("F", "Ford", "Auto"),
+    ("GM", "General Motors", "Auto"),
+    ("M", "Macy's", "Retail"),
+    ("WBA", "Walgreens", "Retail"),
+    ("PARA", "Paramount", "Media"),
+]
+
+
 def normalize_symbol_text(value: str) -> str:
     cleaned = str(value).strip().lower()
     for token in [" ", "-", "_", "/", "\\", ":"]:
@@ -1306,6 +1345,271 @@ def scan_high_upside_opportunities(min_upside_pct: float = EXPLOSION_MIN_UPSIDE_
     return scan_explosion_hunter(min_upside_pct=min_upside_pct)
 
 
+
+def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    temp = df.copy()
+    temp["Date"] = pd.to_datetime(temp["Date"])
+    temp = temp.set_index("Date")
+
+    out = temp.resample(rule).agg(
+        {
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
+        }
+    )
+    out = out.dropna(subset=["Open", "High", "Low", "Close"]).reset_index()
+    return out
+
+
+def add_ma200_only(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["ma200"] = out["Close"].rolling(200).mean()
+    out["ma200_slope_20"] = out["ma200"] - out["ma200"].shift(20)
+    return out.dropna(subset=["ma200"]).reset_index(drop=True)
+
+
+def timeframe_ma200_status(df: pd.DataFrame, label: str) -> dict:
+    if df.empty or len(df) < 210:
+        return {
+            "ok": False,
+            "text": f"{label}: بيانات غير كافية",
+            "close": np.nan,
+            "ma200": np.nan,
+            "distance_pct": np.nan,
+            "slope": np.nan,
+        }
+
+    with_ma = add_ma200_only(df)
+    if with_ma.empty:
+        return {
+            "ok": False,
+            "text": f"{label}: بيانات غير كافية",
+            "close": np.nan,
+            "ma200": np.nan,
+            "distance_pct": np.nan,
+            "slope": np.nan,
+        }
+
+    latest_tf = with_ma.iloc[-1]
+    close = float(latest_tf["Close"])
+    ma200 = float(latest_tf["ma200"])
+    distance_pct = (close / ma200 - 1) * 100 if ma200 > 0 else np.nan
+    slope = float(latest_tf.get("ma200_slope_20", np.nan))
+    ok = close < ma200
+    slope_text = "هابط" if not pd.isna(slope) and slope < 0 else "غير هابط"
+    side_text = "تحت 200" if ok else "فوق 200"
+
+    return {
+        "ok": bool(ok),
+        "text": f"{label}: {side_text} ({distance_pct:.1f}%) / ميل {slope_text}",
+        "close": close,
+        "ma200": ma200,
+        "distance_pct": distance_pct,
+        "slope": slope,
+    }
+
+
+def find_daily_ma200_break_and_retest(daily_df: pd.DataFrame) -> dict:
+    if daily_df.empty or len(daily_df) < 230:
+        return {"valid": False, "reason": "بيانات يومية غير كافية"}
+
+    daily_ma = add_ma200_only(daily_df)
+    if daily_ma.empty or len(daily_ma) < 40:
+        return {"valid": False, "reason": "لا يوجد خط 200 يومي كافٍ"}
+
+    daily_ma["prev_close"] = daily_ma["Close"].shift(1)
+    daily_ma["prev_ma200"] = daily_ma["ma200"].shift(1)
+    daily_ma["break_down"] = (daily_ma["prev_close"] >= daily_ma["prev_ma200"]) & (daily_ma["Close"] < daily_ma["ma200"])
+
+    recent = daily_ma.tail(MA200_MAX_BREAK_AGE_BARS).copy()
+    breaks = recent[recent["break_down"]]
+    if breaks.empty:
+        return {"valid": False, "reason": "لا يوجد كسر يومي حديث لخط 200"}
+
+    break_idx = int(breaks.index[-1])
+    break_row = daily_ma.loc[break_idx]
+    after_break = daily_ma.loc[break_idx + 1:].copy()
+    if after_break.empty:
+        return {"valid": False, "reason": "الكسر حديث جداً ولم يحدث إعادة اختبار بعد"}
+
+    tolerance = MA200_RETEST_TOLERANCE_PCT
+    after_break["near_ma200"] = after_break["High"] >= after_break["ma200"] * (1 - tolerance)
+    after_break["failed_close"] = after_break["Close"] <= after_break["ma200"] * (1 + tolerance * 0.35)
+    retests = after_break[after_break["near_ma200"] & after_break["failed_close"]]
+
+    if retests.empty:
+        return {"valid": False, "reason": "كسر موجود لكن لا توجد إعادة اختبار فاشلة واضحة"}
+
+    retest_idx = int(retests.index[-1])
+    retest_row = daily_ma.loc[retest_idx]
+    latest = daily_ma.iloc[-1]
+
+    latest_close = float(latest["Close"])
+    latest_ma200 = float(latest["ma200"])
+    retest_close = float(retest_row["Close"])
+    retest_ma200 = float(retest_row["ma200"])
+    break_close = float(break_row["Close"])
+    break_ma200 = float(break_row["ma200"])
+
+    fall_after_retest_pct = (latest_close / retest_close - 1) * 100 if retest_close > 0 else np.nan
+    distance_now_pct = (latest_close / latest_ma200 - 1) * 100 if latest_ma200 > 0 else np.nan
+    bars_since_break = int(len(daily_ma) - 1 - break_idx)
+    bars_since_retest = int(len(daily_ma) - 1 - retest_idx)
+
+    if latest_close >= latest_ma200:
+        return {"valid": False, "reason": "السعر عاد فوق خط 200 اليومي"}
+
+    if pd.isna(fall_after_retest_pct) or fall_after_retest_pct > -MA200_MIN_FALL_AFTER_RETEST_PCT:
+        return {
+            "valid": False,
+            "reason": "إعادة الاختبار موجودة لكن الهبوط بعدها ليس قوياً كفاية",
+            "fall_after_retest_pct": fall_after_retest_pct,
+        }
+
+    return {
+        "valid": True,
+        "break_date": break_row["Date"],
+        "break_close": break_close,
+        "break_ma200": break_ma200,
+        "retest_date": retest_row["Date"],
+        "retest_close": retest_close,
+        "retest_ma200": retest_ma200,
+        "latest_close": latest_close,
+        "latest_ma200": latest_ma200,
+        "fall_after_retest_pct": fall_after_retest_pct,
+        "distance_now_pct": distance_now_pct,
+        "bars_since_break": bars_since_break,
+        "bars_since_retest": bars_since_retest,
+    }
+
+
+def analyze_ma200_break_candidate(ticker: str, name: str, kind: str):
+    if infer_asset_type(ticker) != "stock":
+        return None
+
+    data_candidate = load_data(ticker, MA200_BREAK_PERIOD, INTERVAL)
+    if data_candidate.empty or len(data_candidate) < 1200:
+        return None
+
+    daily_df = data_candidate.copy()
+    weekly_df = resample_ohlcv(daily_df, "W-FRI")
+    monthly_df = resample_ohlcv(daily_df, "M")
+
+    daily_status = timeframe_ma200_status(daily_df, "يومي")
+    weekly_status = timeframe_ma200_status(weekly_df, "أسبوعي")
+    monthly_status = timeframe_ma200_status(monthly_df, "شهري")
+
+    if not (daily_status["ok"] and weekly_status["ok"] and monthly_status["ok"]):
+        return None
+
+    break_retest = find_daily_ma200_break_and_retest(daily_df)
+    if not break_retest.get("valid"):
+        return None
+
+    latest_close = float(break_retest["latest_close"])
+    latest_ma200 = float(break_retest["latest_ma200"])
+    weekly_ma200 = float(weekly_status["ma200"])
+    monthly_ma200 = float(monthly_status["ma200"])
+
+    recent_60 = daily_df.tail(60).copy()
+    recent_low = float(recent_60["Low"].min())
+    downside_target = max(recent_low, latest_close * 0.82)
+    risk_line = max(latest_ma200, weekly_ma200 * 0.995)
+    risk_to_reclaim_pct = (risk_line / latest_close - 1) * 100 if latest_close > 0 else np.nan
+    potential_downside_pct = (downside_target / latest_close - 1) * 100 if latest_close > 0 else np.nan
+
+    daily_score = abs(min(float(daily_status["distance_pct"]), 0))
+    weekly_score = abs(min(float(weekly_status["distance_pct"]), 0))
+    monthly_score = abs(min(float(monthly_status["distance_pct"]), 0))
+    fall_score = abs(float(break_retest["fall_after_retest_pct"]))
+    retest_freshness_score = max(0, 40 - float(break_retest["bars_since_retest"])) * 0.35
+
+    ma200_break_score = (
+        daily_score * 1.4
+        + weekly_score * 1.1
+        + monthly_score * 0.9
+        + fall_score * 1.8
+        + retest_freshness_score
+        - max(float(break_retest["bars_since_break"]) - 120, 0) * 0.05
+    )
+
+    if fall_score >= 12:
+        status = "نزل قوي بعد إعادة الاختبار"
+    elif fall_score >= 6:
+        status = "بدأ هبوط واضح بعد إعادة الاختبار"
+    else:
+        status = "كسر مؤكد لكن الهبوط ما زال مبكر"
+
+    reasons = [
+        "كسر 200 يومي",
+        "فشل إعادة اختبار خط 200",
+        "تحت 200 أسبوعي وشهري",
+    ]
+    if float(monthly_status["slope"]) < 0:
+        reasons.append("ميل الشهري هابط")
+    if fall_score >= 10:
+        reasons.append("هبوط قوي بعد الريتست")
+
+    return {
+        "الرمز": ticker,
+        "الاسم": name,
+        "النوع": kind,
+        "الحالة": status,
+        "السعر الحالي": f"{latest_close:.2f}",
+        "خط 200 اليومي": f"{latest_ma200:.2f}",
+        "خط 200 الأسبوعي": f"{weekly_ma200:.2f}",
+        "خط 200 الشهري": f"{monthly_ma200:.2f}",
+        "اليومي": daily_status["text"],
+        "الأسبوعي": weekly_status["text"],
+        "الشهري": monthly_status["text"],
+        "تاريخ الكسر": pd.to_datetime(break_retest["break_date"]).date().isoformat(),
+        "تاريخ إعادة الاختبار": pd.to_datetime(break_retest["retest_date"]).date().isoformat(),
+        "الهبوط بعد إعادة الاختبار": f"{break_retest['fall_after_retest_pct']:.1f}%",
+        "المسافة عن 200 اليومي": f"{break_retest['distance_now_pct']:.1f}%",
+        "إلغاء الفكرة": f"إغلاق فوق {risk_line:.2f}",
+        "الخطر إلى استرجاع 200": f"{risk_to_reclaim_pct:.1f}%",
+        "هدف هبوط أولي": f"{downside_target:.2f}",
+        "مساحة الهبوط الأولية": f"{potential_downside_pct:.1f}%",
+        "سبب الظهور": " + ".join(reasons[:4]),
+        "ma200_break_score": float(ma200_break_score),
+        "fall_numeric": float(fall_score),
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 30)
+def scan_ma200_breaks() -> pd.DataFrame:
+    rows = []
+    seen = set()
+
+    universe = list(MA200_BREAK_UNIVERSE)
+    for ticker, name, kind in EXPLOSION_UNIVERSE:
+        if infer_asset_type(ticker) == "stock":
+            universe.append((ticker, name, kind))
+
+    for ticker, name, kind in universe:
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        try:
+            result = analyze_ma200_break_candidate(ticker, name, kind)
+            if result is not None:
+                rows.append(result)
+        except Exception:
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(rows)
+    result_df = result_df.sort_values(["ma200_break_score", "fall_numeric"], ascending=[False, False]).reset_index(drop=True)
+    return result_df
+
 data = load_data(symbol, PERIOD, INTERVAL)
 
 if data.empty:
@@ -1373,7 +1677,7 @@ forward_scenario = build_forward_scenario(
 )
 latest_close = float(latest["Close"])
 
-tab_decision, tab_chart, tab_test, tab_opportunities = st.tabs(["القرار", "الشارت", "الاختبار", "صيد الانفجارات"])
+tab_decision, tab_chart, tab_test, tab_ma200_break, tab_opportunities = st.tabs(["القرار", "الشارت", "الاختبار", "كسر خط ال200", "صيد الانفجارات"])
 
 with tab_decision:
     st.subheader(f"{instrument_name} — الخلاصة")
@@ -1961,6 +2265,78 @@ with tab_test:
             display_trades["entry_date"] = display_trades["entry_date"].astype(str)
             display_trades["exit_date"] = display_trades["exit_date"].astype(str)
             st.dataframe(display_trades.tail(20), use_container_width=True)
+
+
+with tab_ma200_break:
+    st.subheader("كسر خط ال200")
+    st.caption(
+        "فحص مستقل للأسهم التي كسرت متوسط 200 على اليومي، وهي تحت 200 على الأسبوعي والشهري، "
+        "ثم عملت إعادة اختبار للكسر وفشلت وبعدها ظهر هبوط واضح. هذه قائمة مراقبة وليست توصية بيع أو شراء."
+    )
+
+    st.caption("طريقة التحديث: عند الضغط على زر الفحص يتم تحميل بيانات أطول حتى يمكن حساب خط 200 الشهري.")
+
+    last_update = st.session_state.get("ma200_break_last_update")
+    if last_update:
+        st.caption(f"آخر فحص: {last_update}")
+
+    if st.button("تحديث وفحص كسر 200 الآن", use_container_width=True):
+        with st.spinner("جاري فحص كسر خط 200 على اليومي والأسبوعي والشهري... قد يستغرق قليلاً"):
+            try:
+                load_data.clear()
+                scan_ma200_breaks.clear()
+            except Exception:
+                pass
+            st.session_state["ma200_breaks"] = scan_ma200_breaks()
+            st.session_state["ma200_break_last_update"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+
+    ma200_break_df = st.session_state.get("ma200_breaks", pd.DataFrame())
+
+    if ma200_break_df.empty:
+        st.warning(
+            "لا يوجد سهم مطابق الآن لقاعدة كسر 200 على اليومي والأسبوعي والشهري مع إعادة اختبار فاشلة وهبوط واضح. "
+            "عدم ظهور أسماء أفضل من إظهار إشارات ضعيفة."
+        )
+    else:
+        display_cols = [
+            "الرمز",
+            "الاسم",
+            "النوع",
+            "الحالة",
+            "السعر الحالي",
+            "خط 200 اليومي",
+            "خط 200 الأسبوعي",
+            "خط 200 الشهري",
+            "اليومي",
+            "الأسبوعي",
+            "الشهري",
+            "تاريخ الكسر",
+            "تاريخ إعادة الاختبار",
+            "الهبوط بعد إعادة الاختبار",
+            "المسافة عن 200 اليومي",
+            "إلغاء الفكرة",
+            "الخطر إلى استرجاع 200",
+            "هدف هبوط أولي",
+            "مساحة الهبوط الأولية",
+            "سبب الظهور",
+        ]
+        st.dataframe(
+            ma200_break_df[display_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        top_row = ma200_break_df.iloc[0]
+        st.error(
+            f"أقوى كسر 200 الآن: {top_row['الرمز']} — {top_row['الحالة']}، "
+            f"السعر {top_row['السعر الحالي']}، خط 200 اليومي {top_row['خط 200 اليومي']}، "
+            f"الهبوط بعد إعادة الاختبار {top_row['الهبوط بعد إعادة الاختبار']}، "
+            f"وإلغاء الفكرة {top_row['إلغاء الفكرة']}."
+        )
+        st.caption(
+            "القاعدة تقرأ الكسر كضغط هابط عندما يكون السعر تحت 200 يومي/أسبوعي/شهري، "
+            "ويفشل الرجوع فوق خط 200 اليومي بعد إعادة الاختبار. إلغاء الفكرة يكون باسترجاع خط 200 والثبات فوقه."
+        )
 
 
 with tab_opportunities:
